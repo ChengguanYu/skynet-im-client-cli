@@ -1,4 +1,3 @@
-using System.Net.Sockets;
 using Im.Config;
 using Sproto;
 
@@ -30,35 +29,17 @@ public static class RegisterCommand
             return true;
         }
 
-        // 调用 TCP 接口
         try
         {
             Console.WriteLine($"[INFO] 正在向 {config.Host}:{config.TcpPort} 发送注册请求...");
-            using var tcp = new TcpClient();
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(10));
-            await tcp.ConnectAsync(config.Host, config.TcpPort, cts.Token);
+
+            using var session = new TcpSession(rpc);
+            await session.ConnectAsync(config.Host, config.TcpPort, ct);
 
             var registerReq = rpc.C2S.NewSprotoObject("register.request");
             registerReq["password"] = pw1;
 
-            long session = nextSession();
-            RpcPackage pkg = rpc.PackRequest("register", registerReq, session);
-
-            byte[] packet = new byte[2 + pkg.size];
-            packet[0] = (byte)((pkg.size >> 8) & 0xFF);
-            packet[1] = (byte)(pkg.size & 0xFF);
-            Array.Copy(pkg.data, 0, packet, 2, pkg.size);
-            await tcp.GetStream().WriteAsync(packet, cts.Token);
-
-            // 读取响应
-            byte[] lenBuf = new byte[2];
-            await tcp.GetStream().ReadExactlyAsync(lenBuf, 0, 2, cts.Token);
-            int respLen = (lenBuf[0] << 8) | lenBuf[1];
-            byte[] packedResp = new byte[respLen];
-            await tcp.GetStream().ReadExactlyAsync(packedResp, 0, respLen, cts.Token);
-
-            RpcMessage msg = rpc.UnpackMessage(packedResp, respLen);
+            RpcMessage msg = await session.SendRequestAsync("register", registerReq, nextSession(), ct);
             Console.WriteLine($"[OK] 注册请求已发送，type={msg.type} session={msg.session} proto={msg.proto}");
 
             // TODO: 后续逻辑先留空
