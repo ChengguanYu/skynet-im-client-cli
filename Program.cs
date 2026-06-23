@@ -1,6 +1,7 @@
 ﻿using Im.Cli;
 using Im.Config;
 using Im.Connection;
+using Sproto;
 
 namespace Im;
 
@@ -19,7 +20,13 @@ public static class Program
 
         // 创建模块
         using var connectionManager = new KcpConnectionManager();
-        var commandHandler = new CommandHandler(connectionManager, config);
+
+        // 加载 sproto schema 并创建 RPC 实例
+        string protoPath = Path.Combine(AppContext.BaseDirectory, "Protocol", "proto.sproto");
+        SprotoMgr mgr = SprotoParser.ParseFile(protoPath);
+        SprotoRpc rpc = new SprotoRpc(mgr, mgr);
+
+        var commandHandler = new CommandHandler(connectionManager, config, rpc);
 
         // 注册事件
         connectionManager.MessageReceived += message =>

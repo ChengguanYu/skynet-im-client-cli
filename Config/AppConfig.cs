@@ -16,6 +16,24 @@ public sealed class AppConfig
     public int Port { get; set; } = 12345;
 
     /// <summary>
+    /// 远程服务器 TCP 端口号（connect 指令使用）。
+    /// </summary>
+    public int TcpPort { get; set; } = 8889;
+
+    /// <summary>
+    /// KCP 会话 ID。由客户端自定，服务端按 conv 路由会话。
+    /// </summary>
+    /// <summary>
+    /// 登录账号。
+    /// </summary>
+    public string Account { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 登录密码。
+    /// </summary>
+    public string Password { get; set; } = string.Empty;
+
+    /// <summary>
     /// KCP 会话 ID。由客户端自定，服务端按 conv 路由会话。
     /// </summary>
     public uint Conv { get; set; } = 0x11223344;

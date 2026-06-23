@@ -11,7 +11,7 @@ namespace Im.Connection;
 /// 管理 KCP 连接生命周期：连接、断开、发送、接收。
 /// 基于 KumoKyaku/KCP 库（标准裸 KCP 段，与服务端 lkcp 兼容）。
 /// </summary>
-public sealed class KcpConnectionManager : IDisposable
+public sealed class KcpConnectionManager : IConnectionManager
 {
     private readonly object _stateLock = new();
     private Socket? _socket;
@@ -23,7 +23,8 @@ public sealed class KcpConnectionManager : IDisposable
     private bool _connected;
     private bool _disposed;
 
-    private readonly System.Diagnostics.Stopwatch _progressWatch = System.Diagnostics.Stopwatch.StartNew();
+    // 对端超时检测：发送队列卡住超过 DeadTimeoutMs 判定链路断开
+    private readonly System.Diagnostics.Stopwatch _deadLinkTimer = System.Diagnostics.Stopwatch.StartNew();
     private int _lastWaitSnd;
     private const long DeadTimeoutMs = 10_000;
 
@@ -47,7 +48,7 @@ public sealed class KcpConnectionManager : IDisposable
 
     /// <summary>
     /// 建立到指定主机的 KCP 连接。
-    /// 无握手过程，首条 <c>send</c> 触发服务端建会话。
+    /// 使用时间戳随机生成 conv，连接后立即发送 "CONNECT" 握手。
     /// </summary>
     public async Task<bool> ConnectAsync(AppConfig config, CancellationToken ct)
     {
@@ -69,8 +70,11 @@ public sealed class KcpConnectionManager : IDisposable
             _socket.Bind(new IPEndPoint(IPAddress.Any, 0));
             _remoteEndPoint = endPoint;
 
+            // 随机生成 conv（取时间戳低 32 位）
+            uint conv = (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
             // KCP 实例 —— SimpleSegManager.Kcp 自动设置 SegmentManager，避免空引用
-            _kcp = new SimpleSegManager.Kcp(config.Conv, new KcpCallback((buffer, length) =>
+            _kcp = new SimpleSegManager.Kcp(conv, new KcpCallback((buffer, length) =>
             {
                 try
                 {
@@ -96,12 +100,17 @@ public sealed class KcpConnectionManager : IDisposable
             _udpReceiveTask = UdpReceiveLoopAsync(_cts.Token);
             _updateTask = UpdateLoopAsync(_cts.Token);
 
+            // 发送 "CONNECT" 握手消息（ASCII 编码）
+            byte[] handshake = Encoding.ASCII.GetBytes("CONNECT");
+            _kcp.Send(handshake.AsSpan());
+            _kcp.Update(DateTimeOffset.UtcNow);
+
             lock (_stateLock)
             {
                 _connected = true;
             }
 
-            Console.WriteLine($"[OK] 已连接到 {config.Host}:{config.Port}（会话 ID：{config.Conv}，0x{config.Conv:x8}）");
+            Console.WriteLine($"[OK] 已连接到 {config.Host}:{config.Port}（会话 ID：{conv}，0x{conv:x8}）");
             return true;
         }
         catch (Exception ex)
@@ -165,7 +174,7 @@ public sealed class KcpConnectionManager : IDisposable
             kcp.Update(DateTimeOffset.UtcNow);
 
             // 重置进度时钟，开始监测对端是否可达
-            _progressWatch.Restart();
+            _deadLinkTimer.Restart();
             _lastWaitSnd = kcp.WaitSnd;
 
             Console.WriteLine($"[SENT] {message}");
@@ -217,7 +226,7 @@ public sealed class KcpConnectionManager : IDisposable
                 else
                 {
                     // 收到任何有效 UDP 包，说明对端可达，重置进度时钟
-                    _progressWatch.Restart();
+                    _deadLinkTimer.Restart();
                 }
             }
         }
@@ -258,19 +267,19 @@ public sealed class KcpConnectionManager : IDisposable
                     MessageReceived?.Invoke(msg);
                 }
                 if (receivedAny)
-                    _progressWatch.Restart();
+                    _deadLinkTimer.Restart();
 
                 // 检测发送队列进展
                 int curWaitSnd = _kcp.WaitSnd;
                 if (curWaitSnd < _lastWaitSnd)
                 {
                     // 等待队列减少 → 有 ACK 回来，链路正常
-                    _progressWatch.Restart();
+                    _deadLinkTimer.Restart();
                 }
                 _lastWaitSnd = curWaitSnd;
 
                 // 发送队列卡住超过超时 → 判定对端不可达
-                if (curWaitSnd > 0 && _progressWatch.ElapsedMilliseconds > DeadTimeoutMs && !deadLinkNotified)
+                if (curWaitSnd > 0 && _deadLinkTimer.ElapsedMilliseconds > DeadTimeoutMs && !deadLinkNotified)
                 {
                     deadLinkNotified = true;
                     Console.WriteLine("\n[ERROR] 服务器无响应，连接断开。");
@@ -313,15 +322,15 @@ public sealed class KcpConnectionManager : IDisposable
 
         _cts?.Cancel();
 
-        try { _udpReceiveTask?.GetAwaiter().GetResult(); } catch { }
-        try { _updateTask?.GetAwaiter().GetResult(); } catch { }
-        try { _updateTask?.Dispose(); } catch { }
+        // 等待后台循环退出（仅做清理，忽略异常）
+        try { _udpReceiveTask?.GetAwaiter().GetResult(); } catch { /* 清理阶段忽略异常 */ }
+        try { _updateTask?.GetAwaiter().GetResult(); } catch { /* 清理阶段忽略异常 */ }
+        try { _updateTask?.Dispose(); } catch { /* 清理阶段忽略异常 */ }
 
         _kcp?.Dispose();
         _kcp = null;
 
-        try { _socket?.Close(); } catch { }
-        try { _socket?.Dispose(); } catch { }
+        try { _socket?.Dispose(); } catch { /* 清理阶段忽略异常 */ }
         _socket = null;
 
         _cts?.Dispose();

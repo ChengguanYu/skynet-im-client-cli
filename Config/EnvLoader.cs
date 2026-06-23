@@ -37,8 +37,8 @@ public static class EnvLoader
             int eqIndex = trimmed.IndexOf('=');
             if (eqIndex < 0) continue;
 
-            string key = trimmed[..eqIndex].Trim().ToUpperInvariant();
-            string value = trimmed[(eqIndex + 1)..].Trim().Trim('"', '\'');
+            string key = trimmed[..eqIndex].ToUpperInvariant();
+            string value = trimmed[(eqIndex + 1)..].Trim(' ', '\t', '"', '\'');
 
             switch (key)
             {
@@ -51,6 +51,19 @@ public static class EnvLoader
                     else
                         Console.WriteLine($"[WARN] PORT 值 '{value}' 无效，使用默认值：{config.Port}");
                     break;
+                case "TCP_PORT":
+                    if (int.TryParse(value, out int tcpPort) && tcpPort is > 0 and < 65536)
+                        config.TcpPort = tcpPort;
+                    else
+                        Console.WriteLine($"[WARN] TCP_PORT 值 '{value}' 无效，使用默认值：{config.TcpPort}");
+                    break;
+
+                case "ACCOUNT":
+                    config.Account = value;
+                    break;
+                case "PASSWORD":
+                    config.Password = value;
+                    break;
                 case "CONV":
                     if (TryParseUint(value, out uint conv))
                         config.Conv = conv;
@@ -60,7 +73,7 @@ public static class EnvLoader
             }
         }
 
-        Console.WriteLine($"[INFO] 配置加载完成：HOST={config.Host}, PORT={config.Port}, CONV=0x{config.Conv:x8}");
+        Console.WriteLine($"[INFO] 配置加载完成：HOST={config.Host}, PORT={config.Port}, TCP_PORT={config.TcpPort}, ACCOUNT={config.Account}, CONV=0x{config.Conv:x8}");
         return config;
     }
 

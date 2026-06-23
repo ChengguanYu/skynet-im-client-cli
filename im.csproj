@@ -12,10 +12,14 @@
         <None Update=".env">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </None>
+        <None Update="Protocol\proto.sproto">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
     </ItemGroup>
 
     <ItemGroup>
       <PackageReference Include="Kcp" Version="2.7.0" />
+      <PackageReference Include="SprotoCs" Version="1.0.0" />
     </ItemGroup>
 
 </Project>

@@ -1,5 +1,7 @@
+using System.Net.Sockets;
 using Im.Config;
 using Im.Connection;
+using Sproto;
 
 namespace Im.Cli;
 
@@ -9,18 +11,22 @@ namespace Im.Cli;
 /// </summary>
 public sealed class CommandHandler
 {
-    private readonly KcpConnectionManager _connectionManager;
+    private readonly IConnectionManager _connectionManager;
     private readonly AppConfig _config;
+    private readonly SprotoRpc _rpc;
+    private long _nextSession = 1;
 
     /// <summary>
     /// 初始化 CommandHandler 实例。
     /// </summary>
     /// <param name="connectionManager">KCP 连接管理器。</param>
     /// <param name="config">应用程序配置。</param>
-    public CommandHandler(KcpConnectionManager connectionManager, AppConfig config)
+    /// <param name="rpc">sproto RPC 实例，用于请求打包和响应解包。</param>
+    public CommandHandler(IConnectionManager connectionManager, AppConfig config, SprotoRpc rpc)
     {
         _connectionManager = connectionManager;
         _config = config;
+        _rpc = rpc;
     }
 
     /// <summary>
@@ -31,8 +37,7 @@ public sealed class CommandHandler
     /// <returns>继续运行返回 true，退出返回 false。</returns>
     public async Task<bool> ProcessCommandAsync(string input, CancellationToken ct)
     {
-        // 去除 BOM 和首尾空白
-        input = input.TrimStart('\uFEFF', ' ', '\t');
+        // 转小写便于命令匹配（.NET Trim 会自动去除 BOM）
         string command = input.Trim().ToLowerInvariant();
 
         switch (command)
@@ -44,8 +49,132 @@ public sealed class CommandHandler
                 PrintHelp();
                 return true;
 
-            case "connect":
+            case "entry":
                 await _connectionManager.ConnectAsync(_config, ct);
+                return true;
+
+            case "connect":
+                try
+                {
+                    Console.WriteLine($"[INFO] 正在连接 TCP {_config.Host}:{_config.TcpPort}...");
+                    using var tcp = new TcpClient();
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    cts.CancelAfter(TimeSpan.FromSeconds(10));
+                    await tcp.ConnectAsync(_config.Host, _config.TcpPort, cts.Token);
+
+                    // 构建 login 请求
+                    var loginReq = _rpc.C2S.NewSprotoObject("login.request");
+                    loginReq["account"] = _config.Account;
+                    loginReq["password"] = _config.Password;
+
+                    // 打包请求（含 .package 头部 + body + sproto_pack）
+                    long session = _nextSession++;
+                    RpcPackage pkg = _rpc.PackRequest("login", loginReq, session);
+
+                    // 发送：2 字节大端长度前缀 + packed 数据
+                    byte[] packet = new byte[2 + pkg.size];
+                    packet[0] = (byte)((pkg.size >> 8) & 0xFF);
+                    packet[1] = (byte)(pkg.size & 0xFF);
+                    Array.Copy(pkg.data, 0, packet, 2, pkg.size);
+                    await tcp.GetStream().WriteAsync(packet, cts.Token);
+
+                    // 读取响应
+                    byte[] lenBuf = new byte[2];
+                    await tcp.GetStream().ReadExactlyAsync(lenBuf, 0, 2, cts.Token);
+                    int respLen = (lenBuf[0] << 8) | lenBuf[1];
+
+                    byte[] packedResp = new byte[respLen];
+                    await tcp.GetStream().ReadExactlyAsync(packedResp, 0, respLen, cts.Token);
+
+                    // 解包响应
+                    RpcMessage msg = _rpc.UnpackMessage(packedResp, respLen);
+                    Console.WriteLine($"[OK] TCP 连接成功，type={msg.type} session={msg.session} proto={msg.proto}");
+
+                    // 解码响应字段
+                    if (msg.response != null)
+                    {
+                        var tokenObj = msg.response.Get("token");
+                        if (tokenObj != null)
+                            Console.WriteLine($"[OK] login 响应 token={(string)tokenObj}");
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    Console.WriteLine("[ERROR] TCP 连接超时（服务端无响应）");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[ERROR] TCP 连接失败：{ex.Message}");
+                }
+                return true;
+
+            case "register":
+                Console.Write("请输入密码: ");
+                string? pw1 = Console.ReadLine();
+                Console.Write("请重复密码: ");
+                string? pw2 = Console.ReadLine();
+
+                if (string.IsNullOrEmpty(pw1) || pw1 != pw2)
+                {
+                    Console.WriteLine("[ERROR] 两次密码不一致或密码为空");
+                    return true;
+                }
+
+                Console.Write("确认注册？(y/n): ");
+                string? confirm = Console.ReadLine()?.Trim().ToLowerInvariant();
+                if (confirm != "y" && confirm != "yes")
+                {
+                    Console.WriteLine("[INFO] 已取消注册");
+                    return true;
+                }
+
+                // 调用 TCP 接口
+                try
+                {
+                    Console.WriteLine($"[INFO] 正在向 {_config.Host}:{_config.TcpPort} 发送注册请求...");
+                    using var tcp = new TcpClient();
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    cts.CancelAfter(TimeSpan.FromSeconds(10));
+                    await tcp.ConnectAsync(_config.Host, _config.TcpPort, cts.Token);
+
+                    var registerReq = _rpc.C2S.NewSprotoObject("register.request");
+                    registerReq["password"] = pw1;
+
+                    long session = _nextSession++;
+                    RpcPackage pkg = _rpc.PackRequest("register", registerReq, session);
+
+                    byte[] packet = new byte[2 + pkg.size];
+                    packet[0] = (byte)((pkg.size >> 8) & 0xFF);
+                    packet[1] = (byte)(pkg.size & 0xFF);
+                    Array.Copy(pkg.data, 0, packet, 2, pkg.size);
+                    await tcp.GetStream().WriteAsync(packet, cts.Token);
+
+                    // 读取响应
+                    byte[] lenBuf = new byte[2];
+                    await tcp.GetStream().ReadExactlyAsync(lenBuf, 0, 2, cts.Token);
+                    int respLen = (lenBuf[0] << 8) | lenBuf[1];
+                    byte[] packedResp = new byte[respLen];
+                    await tcp.GetStream().ReadExactlyAsync(packedResp, 0, respLen, cts.Token);
+
+                    RpcMessage msg = _rpc.UnpackMessage(packedResp, respLen);
+                    Console.WriteLine($"[OK] 注册请求已发送，type={msg.type} session={msg.session} proto={msg.proto}");
+
+                    // TODO: 后续逻辑先留空
+                    if (msg.response != null)
+                    {
+                        var accountObj = msg.response.Get("account");
+                        if (accountObj != null)
+                            Console.WriteLine($"[OK] 注册成功，账号={(string)accountObj}");
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    Console.WriteLine("[ERROR] 注册请求超时（服务端无响应）");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[ERROR] 注册失败：{ex.Message}");
+                }
                 return true;
 
             case "disconnect":
@@ -116,9 +245,11 @@ public sealed class CommandHandler
     /// </summary>
     private void PrintConfig()
     {
-        Console.WriteLine($"  HOST = {_config.Host}");
-        Console.WriteLine($"  PORT = {_config.Port}");
-        Console.WriteLine($"  CONV = 0x{_config.Conv:x8} ({_config.Conv})");
+        Console.WriteLine($"  HOST     = {_config.Host}");
+        Console.WriteLine($"  PORT     = {_config.Port}");
+        Console.WriteLine($"  TCP_PORT = {_config.TcpPort}");
+        Console.WriteLine($"  ACCOUNT  = {_config.Account}");
+        Console.WriteLine($"  CONV     = 0x{_config.Conv:x8} ({_config.Conv})");
     }
 
     /// <summary>
@@ -127,7 +258,9 @@ public sealed class CommandHandler
     private static void PrintHelp()
     {
         Console.WriteLine("可用命令：");
-        Console.WriteLine("  connect          - 连接到远程 KCP 服务器");
+        Console.WriteLine("  entry            - 通过 KCP 连接到远程服务器");
+        Console.WriteLine("  connect          - 通过 TCP 连接远程服务器并发送 login");
+        Console.WriteLine("  register         - 注册新账号（输入密码 → 确认密码 → 确认注册 → 调用 TCP）");
         Console.WriteLine("  disconnect       - 断开远程连接");
         Console.WriteLine("  send <message>   - 发送文本消息到服务器");
         Console.WriteLine("  status           - 查看当前连接状态");
