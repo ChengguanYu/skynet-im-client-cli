@@ -1,47 +1,65 @@
 using Im.Config;
+using Im.Connection;
 using Sproto;
 
 namespace Im.Cli;
 
 /// <summary>
-/// 处理 connect 指令：通过 TCP 连接服务端并发送 login 请求。
+/// 处理 connect 指令：TCP 连接 → 构造 login 请求 → 解析响应 → SetAuthenticated → 启动 keepAlive。
 /// </summary>
-/// <param name="onLogin">登录成功回调，参数为 (token, name)，由调用方写回登录态。</param>
 public static class ConnectCommand
 {
-    public static async Task<bool> ExecuteAsync(AppConfig config, SprotoRpc rpc, Func<long> nextSession, CancellationToken ct, Action<string, string>? onLogin = null)
+    /// <summary>
+    /// 执行 connect 指令。
+    /// </summary>
+    /// <param name="config">应用程序配置。</param>
+    /// <param name="rpc">sproto RPC 实例，用于构造 login 请求。</param>
+    /// <param name="tcp">TCP 会话状态机。</param>
+    /// <param name="keepAlive">keepAlive 服务，登录成功后启动。</param>
+    /// <param name="ct">取消令牌。</param>
+    public static async Task ExecuteAsync(AppConfig config, SprotoRpc rpc, TcpSessionManager tcp, KeepAliveService keepAlive, CancellationToken ct)
     {
         try
         {
             Console.WriteLine($"[INFO] 正在连接 TCP {config.Host}:{config.TcpPort}...");
+            await tcp.ConnectAsync(config.Host, config.TcpPort, ct);
 
-            using var session = new TcpSession(rpc);
-            await session.ConnectAsync(config.Host, config.TcpPort, ct);
+            Console.WriteLine($"[OK] TCP 连接成功，正在登录...");
+            var req = rpc.C2S.NewSprotoObject("login.request");
+            req["account"] = config.Account;
+            req["password"] = config.Password;
 
-            var loginReq = rpc.C2S.NewSprotoObject("login.request");
-            loginReq["account"] = config.Account;
-            loginReq["password"] = config.Password;
+            RpcMessage msg = await tcp.SendRequestAsync("login", req, ct);
 
-            RpcMessage msg = await session.SendRequestAsync("login", loginReq, nextSession(), ct);
-            Console.WriteLine($"[OK] TCP 连接成功，type={msg.type} session={msg.session} proto={msg.proto}");
-
-            if (msg.response != null)
+            if (msg.response == null)
             {
-                var tokenObj = msg.response.Get("token");
-                string token = tokenObj == null ? "" : (string)tokenObj;
-                if (string.IsNullOrEmpty(token))
-                {
-                    // token 为空说明登录失败，提醒用户
-                    Console.WriteLine("[ERROR] 登录失败：服务端未返回有效 token，请检查账号和密码。");
-                    return true;
-                }
-
-                var nameObj = msg.response.Get("name");
-                string name = nameObj == null ? "" : (string)nameObj;
-                onLogin?.Invoke(token, name);
-                Console.WriteLine("[OK] 登录成功");
-                if (!string.IsNullOrEmpty(name)) Console.WriteLine($"[INFO] 欢迎 {name}");
+                Console.WriteLine("[ERROR] 登录失败：服务端无响应。");
+                tcp.Disconnect();
+                return;
             }
+
+            var tokenObj = msg.response.Get("token");
+            string token = tokenObj == null ? "" : (string)tokenObj;
+            if (string.IsNullOrEmpty(token))
+            {
+                Console.WriteLine("[ERROR] 登录失败：服务端未返回有效 token，请检查账号和密码。");
+                tcp.Disconnect();
+                return;
+            }
+
+            var nameObj = msg.response.Get("name");
+            string name = nameObj == null ? "" : (string)nameObj;
+
+            var sessionIdObj = msg.response.Get("session_id");
+            long? sessionId = sessionIdObj == null ? null : (long)sessionIdObj;
+
+            // 业务层解析完毕，交给状态机保存登录态并转 Authenticated
+            tcp.SetAuthenticated(token, sessionId, name);
+            Console.WriteLine("[OK] 登录成功");
+            if (!string.IsNullOrEmpty(name)) Console.WriteLine($"[INFO] 欢迎 {name}");
+
+            // 登录成功后启动 keepAlive 保活
+            keepAlive.Start();
         }
         catch (OperationCanceledException)
         {
@@ -49,8 +67,7 @@ public static class ConnectCommand
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[ERROR] TCP 连接失败：{ex.Message}");
+            Console.WriteLine($"[ERROR] {ex.Message}");
         }
-        return true;
     }
 }

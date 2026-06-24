@@ -19,19 +19,23 @@ public static class Program
         AppConfig config = EnvLoader.Load();
 
         // 创建模块
-        using var connectionManager = new KcpConnectionManager();
+        using var kcp = new KcpConnectionManager();
 
         // 加载 sproto schema 并创建 RPC 实例
         string protoPath = Path.Combine(AppContext.BaseDirectory, "Protocol", "proto.sproto");
         SprotoMgr mgr = SprotoParser.ParseFile(protoPath);
         SprotoRpc rpc = new SprotoRpc(mgr, mgr);
 
-        var commandHandler = new CommandHandler(connectionManager, config, rpc);
+        // 共享的 RPC 会话 ID 生成器
+        long nextSession = 1;
+        using var tcp = new TcpSessionManager(rpc, () => nextSession++);
+
+        using var commandHandler = new CommandHandler(kcp, tcp, config, rpc);
 
         // 注册事件
-        connectionManager.MessageReceived += message =>
+        kcp.MessageReceived += message =>
             Console.WriteLine($"\n[RECV] {message}");
-        connectionManager.ConnectionLost += () =>
+        kcp.ConnectionLost += () =>
             Console.WriteLine("\n[INFO] 连接丢失。");
 
         // 打印横幅

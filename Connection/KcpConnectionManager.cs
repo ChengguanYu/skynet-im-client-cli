@@ -8,10 +8,11 @@ using System.Net.Sockets.Kcp;
 namespace Im.Connection;
 
 /// <summary>
-/// 管理 KCP 连接生命周期：连接、断开、发送、接收。
+/// KCP 连接管理器。负责 KCP over UDP 的连接生命周期：
+/// 建立 KCP 会话、收发应用层消息、驱动 KCP 状态机、断开清理。
 /// 基于 KumoKyaku/KCP 库（标准裸 KCP 段，与服务端 lkcp 兼容）。
 /// </summary>
-public sealed class KcpConnectionManager : IConnectionManager
+public sealed class KcpConnectionManager : IDisposable
 {
     private readonly object _stateLock = new();
     private Socket? _socket;

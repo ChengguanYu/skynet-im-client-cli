@@ -8,42 +8,51 @@ namespace Im.Cli;
 /// 处理 CLI 命令解析与分发。
 /// 在用户输入和连接管理器之间进行协调。
 /// </summary>
-public sealed class CommandHandler
+public sealed class CommandHandler : IDisposable
 {
-    private readonly IConnectionManager _connectionManager;
+    private readonly KcpConnectionManager _kcp;
+    private readonly TcpSessionManager _tcp;
+    private readonly KeepAliveService _keepAlive;
     private readonly AppConfig _config;
     private readonly SprotoRpc _rpc;
-    private long _nextSession = 1;
-    private readonly LoginState _login = new();
 
     /// <summary>
     /// 初始化 CommandHandler 实例。
     /// </summary>
-    /// <param name="connectionManager">KCP 连接管理器。</param>
+    /// <param name="kcp">KCP 连接管理器，负责 entry/send/disconnect 的 KCP 通道。</param>
+    /// <param name="tcp">TCP 会话状态机，负责 TCP 连接生命周期与通用收发。</param>
     /// <param name="config">应用程序配置。</param>
-    /// <param name="rpc">sproto RPC 实例，用于请求打包和响应解包。</param>
-    public CommandHandler(IConnectionManager connectionManager, AppConfig config, SprotoRpc rpc)
+    /// <param name="rpc">sproto RPC 实例，用于构造 login/register 等业务请求。</param>
+    public CommandHandler(KcpConnectionManager kcp, TcpSessionManager tcp, AppConfig config, SprotoRpc rpc)
     {
-        _connectionManager = connectionManager;
+        _kcp = kcp;
+        _tcp = tcp;
         _config = config;
         _rpc = rpc;
+        _keepAlive = new KeepAliveService(rpc, tcp);
+        _tcp.ConnectionLost += OnTcpConnectionLost;
+    }
+
+    /// <summary>
+    /// TCP 连接异常断开：停止 keepAlive 并提示用户。
+    /// 登录态已由 TcpSessionManager 内部清理。
+    /// </summary>
+    private void OnTcpConnectionLost()
+    {
+        _keepAlive.Stop();
+        Console.WriteLine("\n[INFO] 登录已失效，请重新 connect。");
     }
 
     /// <summary>
     /// 处理单行命令输入。
     /// </summary>
-    /// <param name="input">原始用户输入。</param>
-    /// <param name="ct">取消令牌。</param>
-    /// <returns>继续运行返回 true，退出返回 false。</returns>
     public async Task<bool> ProcessCommandAsync(string input, CancellationToken ct)
     {
-        // 转小写便于命令匹配（.NET Trim 会自动去除 BOM）
         string command = input.Trim().ToLowerInvariant();
 
-        // room 指令分流（含子命令，需保留原始输入的大小写）
         if (command == "room" || command.StartsWith("room "))
         {
-            return await RoomCommand.ExecuteAsync(_login, input, ct);
+            return await RoomCommand.ExecuteAsync(_tcp, input, ct);
         }
 
         switch (command)
@@ -56,27 +65,31 @@ public sealed class CommandHandler
                 return true;
 
             case "entry":
-                await _connectionManager.ConnectAsync(_config, ct);
+                await _kcp.ConnectAsync(_config, ct);
                 return true;
 
             case "connect":
-                if (_login.IsLoggedIn)
+                if (_tcp.IsLoggedIn)
                 {
                     Console.WriteLine("[ERROR] 已登录，无需 login");
                     return true;
                 }
-                return await ConnectCommand.ExecuteAsync(_config, _rpc, () => _nextSession++, ct, (token, name) => _login.Authenticate(token, name));
+                await ConnectCommand.ExecuteAsync(_config, _rpc, _tcp, _keepAlive, ct);
+                return true;
 
             case "register":
-                if (_login.IsLoggedIn)
+                if (_tcp.IsConnected)
                 {
-                    Console.WriteLine("[ERROR] 已登录，无需 register");
+                    Console.WriteLine("[ERROR] TCP 已连接，请先 disconnect");
                     return true;
                 }
-                return await RegisterCommand.ExecuteAsync(_config, _rpc, () => _nextSession++, ct);
+                await RegisterCommand.ExecuteAsync(_config, _rpc, _tcp, ct);
+                return true;
 
             case "disconnect":
-                _connectionManager.Disconnect();
+                _keepAlive.Stop();
+                _tcp.Disconnect();
+                _kcp.Disconnect();
                 return true;
 
             case "status":
@@ -89,7 +102,9 @@ public sealed class CommandHandler
 
             case "quit":
             case "exit":
-                _connectionManager.Disconnect();
+                _keepAlive.Dispose();
+                _tcp.Dispose();
+                _kcp.Disconnect();
                 Console.WriteLine("[INFO] 再见。");
                 return false;
 
@@ -97,7 +112,7 @@ public sealed class CommandHandler
                 if (command.StartsWith("send "))
                 {
                     string message = input.Trim()[5..];
-                    await _connectionManager.SendMessageAsync(message, ct);
+                    await _kcp.SendMessageAsync(message, ct);
                 }
                 else
                 {
@@ -108,15 +123,14 @@ public sealed class CommandHandler
     }
 
     /// <summary>
-    /// 根据当前连接状态和登录态获取提示符。
-    /// 已登录（token + name 均存在）视为已连接。
+    /// 根据当前连接状态获取提示符。
     /// </summary>
     public string GetPrompt()
     {
-        bool loggedIn = _login.IsLoggedIn && !string.IsNullOrEmpty(_login.DisplayName);
-        bool isConnected = loggedIn || _connectionManager.IsConnected;
+        bool loggedIn = _tcp.IsLoggedIn && !string.IsNullOrEmpty(_tcp.DisplayName);
+        bool isConnected = loggedIn || _kcp.IsConnected;
         string suffix = isConnected ? "[connected]> " : "[disconnected]> ";
-        return loggedIn ? $"<{_login.DisplayName}>@{suffix}" : suffix;
+        return loggedIn ? $"<{_tcp.DisplayName}>@{suffix}" : suffix;
     }
 
     /// <summary>
@@ -136,10 +150,12 @@ public sealed class CommandHandler
     /// </summary>
     private void PrintStatus()
     {
-        if (_connectionManager.IsConnected)
-            Console.WriteLine($"[STATUS] 已连接到 {_config.Host}:{_config.Port}（会话 ID：0x{_config.Conv:x8}）");
+        if (_kcp.IsConnected)
+            Console.WriteLine($"[STATUS] KCP 已连接到 {_config.Host}:{_config.Port}（会话 ID：0x{_config.Conv:x8}）");
         else
-            Console.WriteLine("[STATUS] 未连接");
+            Console.WriteLine("[STATUS] KCP 未连接");
+
+        Console.WriteLine($"[STATUS] TCP 状态：{_tcp.State}");
     }
 
     /// <summary>
@@ -161,7 +177,7 @@ public sealed class CommandHandler
     {
         Console.WriteLine("可用命令：");
         Console.WriteLine("  entry            - 通过 KCP 连接到远程服务器");
-        if (!_login.IsLoggedIn)
+        if (!_tcp.IsLoggedIn)
         {
             Console.WriteLine("  connect          - 通过 TCP 连接远程服务器并发送 login");
             Console.WriteLine("  register         - 注册新账号（输入密码 → 确认密码 → 确认注册 → 调用 TCP）");
@@ -180,5 +196,14 @@ public sealed class CommandHandler
         Console.WriteLine("  quit / exit      - 断开并退出程序");
         Console.WriteLine();
         Console.WriteLine("按 Ctrl+C 可随时强制退出。");
+    }
+
+    /// <summary>
+    /// 释放 CommandHandler 持有的资源。
+    /// </summary>
+    public void Dispose()
+    {
+        _keepAlive.Dispose();
+        _tcp.Dispose();
     }
 }

@@ -11,6 +11,8 @@ login 1 {
 
     response {
         token 0 : string
+        name 1 : string
+        session_id 2 : integer
     }
 }
 
@@ -26,7 +28,8 @@ register 2{
 }
 keepAlive 3{
     request {
-    
+        session 0 : string
+        token 1 : string
     }
     response {
 
