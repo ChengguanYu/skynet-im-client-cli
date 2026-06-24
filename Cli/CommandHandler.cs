@@ -14,6 +14,7 @@ public sealed class CommandHandler
     private readonly AppConfig _config;
     private readonly SprotoRpc _rpc;
     private long _nextSession = 1;
+    private readonly LoginState _login = new();
 
     /// <summary>
     /// 初始化 CommandHandler 实例。
@@ -39,6 +40,12 @@ public sealed class CommandHandler
         // 转小写便于命令匹配（.NET Trim 会自动去除 BOM）
         string command = input.Trim().ToLowerInvariant();
 
+        // room 指令分流（含子命令，需保留原始输入的大小写）
+        if (command == "room" || command.StartsWith("room "))
+        {
+            return await RoomCommand.ExecuteAsync(_login, input, ct);
+        }
+
         switch (command)
         {
             case "":
@@ -53,9 +60,19 @@ public sealed class CommandHandler
                 return true;
 
             case "connect":
-                return await ConnectCommand.ExecuteAsync(_config, _rpc, () => _nextSession++, ct);
+                if (_login.IsLoggedIn)
+                {
+                    Console.WriteLine("[ERROR] 已登录，无需 login");
+                    return true;
+                }
+                return await ConnectCommand.ExecuteAsync(_config, _rpc, () => _nextSession++, ct, (token, name) => _login.Authenticate(token, name));
 
             case "register":
+                if (_login.IsLoggedIn)
+                {
+                    Console.WriteLine("[ERROR] 已登录，无需 register");
+                    return true;
+                }
                 return await RegisterCommand.ExecuteAsync(_config, _rpc, () => _nextSession++, ct);
 
             case "disconnect":
@@ -91,11 +108,15 @@ public sealed class CommandHandler
     }
 
     /// <summary>
-    /// 根据当前连接状态获取提示符。
+    /// 根据当前连接状态和登录态获取提示符。
+    /// 已登录（token + name 均存在）视为已连接。
     /// </summary>
     public string GetPrompt()
     {
-        return _connectionManager.IsConnected ? "[connected]> " : "[disconnected]> ";
+        bool loggedIn = _login.IsLoggedIn && !string.IsNullOrEmpty(_login.DisplayName);
+        bool isConnected = loggedIn || _connectionManager.IsConnected;
+        string suffix = isConnected ? "[connected]> " : "[disconnected]> ";
+        return loggedIn ? $"<{_login.DisplayName}>@{suffix}" : suffix;
     }
 
     /// <summary>
@@ -134,14 +155,23 @@ public sealed class CommandHandler
     }
 
     /// <summary>
-    /// 打印帮助信息。
+    /// 打印帮助信息，仅展示当前状态可用的命令。
     /// </summary>
-    private static void PrintHelp()
+    private void PrintHelp()
     {
         Console.WriteLine("可用命令：");
         Console.WriteLine("  entry            - 通过 KCP 连接到远程服务器");
-        Console.WriteLine("  connect          - 通过 TCP 连接远程服务器并发送 login");
-        Console.WriteLine("  register         - 注册新账号（输入密码 → 确认密码 → 确认注册 → 调用 TCP）");
+        if (!_login.IsLoggedIn)
+        {
+            Console.WriteLine("  connect          - 通过 TCP 连接远程服务器并发送 login");
+            Console.WriteLine("  register         - 注册新账号（输入密码 → 确认密码 → 确认注册 → 调用 TCP）");
+        }
+        else
+        {
+            Console.WriteLine("  room list        - 列出房间列表（业务待实现）");
+            Console.WriteLine("  room entry <room>- 进入指定房间（业务待实现）");
+            Console.WriteLine("  room create -n <name> - 创建房间（业务待实现）");
+        }
         Console.WriteLine("  disconnect       - 断开远程连接");
         Console.WriteLine("  send <message>   - 发送文本消息到服务器");
         Console.WriteLine("  status           - 查看当前连接状态");
