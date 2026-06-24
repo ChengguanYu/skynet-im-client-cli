@@ -10,6 +10,14 @@ public static class RegisterCommand
 {
     public static async Task<bool> ExecuteAsync(AppConfig config, SprotoRpc rpc, Func<long> nextSession, CancellationToken ct)
     {
+        Console.Write("请输入昵称: ");
+        string? name = Console.ReadLine();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            Console.WriteLine("[ERROR] 昵称不能为空");
+            return true;
+        }
+
         Console.Write("请输入密码: ");
         string? pw1 = Console.ReadLine();
         Console.Write("请重复密码: ");
@@ -37,6 +45,7 @@ public static class RegisterCommand
             await session.ConnectAsync(config.Host, config.TcpPort, ct);
 
             var registerReq = rpc.C2S.NewSprotoObject("register.request");
+            registerReq["name"] = name;
             registerReq["password"] = pw1;
 
             RpcMessage msg = await session.SendRequestAsync("register", registerReq, nextSession(), ct);

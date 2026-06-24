@@ -17,9 +17,18 @@ login 1 {
 register 2{
     request {
         password 0 : string
+        name 1 : string
     }
     
     response {
         account 0 : string
+    }
+}
+keepAlive 3{
+    request {
+    
+    }
+    response {
+
     }
 }
