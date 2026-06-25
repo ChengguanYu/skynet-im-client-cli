@@ -40,7 +40,7 @@ public static class RoomCommand
         switch (sub)
         {
             case "list":
-                Console.WriteLine("[INFO] room list：列出房间列表（业务待实现）");
+                await ListRoomsAsync(rpc, tcp, ct);
                 return true;
 
             case "entry":
@@ -120,6 +120,79 @@ public static class RoomCommand
         catch (Exception ex)
         {
             Console.WriteLine($"[ERROR] 创建房间失败：{ex.Message}，room_id=-1");
+        }
+    }
+
+    /// <summary>
+    /// 构造并发送 get_rooms 请求，格式化打印房间列表。
+    /// proto: get_rooms.request { token 0 : string }
+    ///        get_rooms.response { rooms 0 : room * }
+    /// 成功打印房间列表；失败或空则提示"当前无房间"。
+    /// </summary>
+    private static async Task ListRoomsAsync(SprotoRpc rpc, TcpSessionManager tcp, CancellationToken ct)
+    {
+        string? token = tcp.Token;
+        if (string.IsNullOrEmpty(token))
+        {
+            Console.WriteLine("当前无房间");
+            return;
+        }
+
+        try
+        {
+            var req = rpc.C2S.NewSprotoObject("get_rooms.request");
+            req["token"] = token;
+
+            RpcMessage msg = await tcp.SendRequestAsync("get_rooms", req, ct);
+
+            if (msg.response == null)
+            {
+                Console.WriteLine("当前无房间");
+                return;
+            }
+
+            var roomsObj = msg.response.Get("rooms");
+            if (roomsObj == null)
+            {
+                Console.WriteLine("当前无房间");
+                return;
+            }
+
+            List<SprotoObject> rooms;
+            try
+            {
+                rooms = (List<SprotoObject>)roomsObj;
+            }
+            catch
+            {
+                Console.WriteLine("当前无房间");
+                return;
+            }
+
+            if (rooms.Count == 0)
+            {
+                Console.WriteLine("当前无房间");
+                return;
+            }
+
+            Console.WriteLine($"房间列表（共 {rooms.Count} 个）：");
+            Console.WriteLine($"  {"ID",6}  {"名称",-20}  创建者");
+            Console.WriteLine($"  {new string('-', 6)}  {new string('-', 20)}  {new string('-', 10)}");
+            foreach (var room in rooms)
+            {
+                long roomId = (long)room.Get("room_id");
+                string roomName = (string)room.Get("room_name");
+                string roomOwner = (string)room.Get("room_owner");
+                Console.WriteLine($"  {roomId,6}  {roomName,-20}  {roomOwner}");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("[ERROR] 获取房间列表失败：请求超时（服务端无响应）");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ERROR] 获取房间列表失败：{ex.Message}");
         }
     }
 

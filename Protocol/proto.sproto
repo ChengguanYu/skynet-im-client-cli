@@ -45,3 +45,18 @@ create_room 4{
         room_id 0 : integer
     }
 }
+
+.room {
+    room_id    0 : integer
+    room_name  1 : string
+    room_owner 2 : string
+}
+
+get_rooms 5{
+    request {
+        token 0 : string 
+    }
+    response {
+        rooms 0 : *room
+    }
+}
