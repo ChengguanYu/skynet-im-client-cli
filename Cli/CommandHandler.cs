@@ -52,7 +52,7 @@ public sealed class CommandHandler : IDisposable
 
         if (command == "room" || command.StartsWith("room "))
         {
-            return await RoomCommand.ExecuteAsync(_tcp, input, ct);
+            return await RoomCommand.ExecuteAsync(_rpc, _tcp, input, ct);
         }
 
         switch (command)
@@ -186,7 +186,7 @@ public sealed class CommandHandler : IDisposable
         {
             Console.WriteLine("  room list        - 列出房间列表（业务待实现）");
             Console.WriteLine("  room entry <room>- 进入指定房间（业务待实现）");
-            Console.WriteLine("  room create -n <name> - 创建房间（业务待实现）");
+            Console.WriteLine("  room create -n <name> - 创建房间");
         }
         Console.WriteLine("  disconnect       - 断开远程连接");
         Console.WriteLine("  send <message>   - 发送文本消息到服务器");
