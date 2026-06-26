@@ -24,7 +24,9 @@ public sealed class KcpConnectionManager : IDisposable
     private bool _connected;
     private bool _disposed;
 
-    // 对端超时检测：发送队列卡住超过 DeadTimeoutMs 判定链路断开
+    // 原始字节请求-响应：用于 sproto 协议在 KCP 上的收发
+    private readonly object _rawLock = new();
+    private TaskCompletionSource<byte[]>? _rawResponseTcs;
     private readonly System.Diagnostics.Stopwatch _deadLinkTimer = System.Diagnostics.Stopwatch.StartNew();
     private int _lastWaitSnd;
     private const long DeadTimeoutMs = 10_000;
@@ -139,6 +141,59 @@ public sealed class KcpConnectionManager : IDisposable
         Console.WriteLine("[INFO] 正在断开...");
         CleanupConnection();
         Console.WriteLine("[OK] 已断开。");
+    }
+
+    /// <summary>
+    /// 通过 KCP 连接发送原始字节数据。
+    /// </summary>
+    public Task<bool> SendRawAsync(byte[] data, CancellationToken ct)
+    {
+        SimpleSegManager.Kcp? kcp;
+        lock (_stateLock)
+        {
+            if (!_connected || _kcp is null)
+            {
+                Console.WriteLine("[ERROR] 未连接，请先执行 'connect'。");
+                return Task.FromResult(false);
+            }
+            kcp = _kcp;
+        }
+
+        try
+        {
+            kcp.Send(data.AsSpan());
+            kcp.Update(DateTimeOffset.UtcNow);
+
+            _deadLinkTimer.Restart();
+            _lastWaitSnd = kcp.WaitSnd;
+
+            return Task.FromResult(true);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ERROR] 发送失败：{ex.Message}");
+            return Task.FromResult(false);
+        }
+    }
+
+    /// <summary>
+    /// 等待下一个通过 KCP 到达的原始字节响应（仅一次）。
+    /// 与 <see cref="SendRawAsync"/> 配合实现请求-响应模式。
+    /// </summary>
+    public Task<byte[]> WaitForRawResponseAsync(CancellationToken ct)
+    {
+        var tcs = new TaskCompletionSource<byte[]>();
+        lock (_rawLock)
+        {
+            _rawResponseTcs = tcs;
+        }
+
+        if (ct.CanBeCanceled)
+        {
+            ct.Register(() => tcs.TrySetCanceled());
+        }
+
+        return tcs.Task;
     }
 
     /// <summary>
@@ -264,8 +319,27 @@ public sealed class KcpConnectionManager : IDisposable
                         break;
 
                     receivedAny = true;
-                    string msg = Encoding.UTF8.GetString(appBuf, 0, n);
-                    MessageReceived?.Invoke(msg);
+
+                    // 优先投递给原始字节等待者（sproto 请求-响应）
+                    TaskCompletionSource<byte[]>? rawTcs;
+                    lock (_rawLock)
+                    {
+                        rawTcs = _rawResponseTcs;
+                        if (rawTcs != null)
+                            _rawResponseTcs = null;
+                    }
+
+                    if (rawTcs != null)
+                    {
+                        var response = new byte[n];
+                        Array.Copy(appBuf, response, n);
+                        rawTcs.TrySetResult(response);
+                    }
+                    else
+                    {
+                        string msg = Encoding.UTF8.GetString(appBuf, 0, n);
+                        MessageReceived?.Invoke(msg);
+                    }
                 }
                 if (receivedAny)
                     _deadLinkTimer.Restart();

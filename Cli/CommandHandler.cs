@@ -15,6 +15,7 @@ public sealed class CommandHandler : IDisposable
     private readonly KeepAliveService _keepAlive;
     private readonly AppConfig _config;
     private readonly SprotoRpc _rpc;
+    private long _sessionCounter;
 
     /// <summary>
     /// 初始化 CommandHandler 实例。
@@ -65,7 +66,58 @@ public sealed class CommandHandler : IDisposable
                 return true;
 
             case "entry":
-                await _kcp.ConnectAsync(_config, ct);
+                try
+                {
+                    // 1. 建立 KCP 连接
+                    bool kcpConnected = await _kcp.ConnectAsync(_config, ct);
+                    if (!kcpConnected)
+                    {
+                        Console.WriteLine("[ERROR] KCP 连接失败");
+                        return true;
+                    }
+
+                    // 2. 打包 create_kcp_session 请求
+                    var req = _rpc.C2S.NewSprotoObject("create_kcp_session.request");
+                    req["token"] = "mooc";
+
+                    long sessionId = Interlocked.Increment(ref _sessionCounter);
+                    RpcPackage pkg = _rpc.PackRequest("create_kcp_session", req, sessionId);
+
+                    // 3. 通过 KCP 发送打包后的 sproto 数据
+                    Console.WriteLine("[INFO] 正在通过 KCP 发送 create_kcp_session 请求...");
+                    byte[] sendBuf = new byte[pkg.size];
+                    Array.Copy(pkg.data, sendBuf, pkg.size);
+                    bool sent = await _kcp.SendRawAsync(sendBuf, ct);
+                    if (!sent)
+                    {
+                        Console.WriteLine("[ERROR] create_kcp_session 发送失败");
+                        return true;
+                    }
+
+                    // 4. 等待原始字节响应
+                    Console.WriteLine("[INFO] 等待响应...");
+                    byte[] responseBytes = await _kcp.WaitForRawResponseAsync(ct);
+
+                    // 5. 解包响应
+                    RpcMessage msg = _rpc.UnpackMessage(responseBytes, responseBytes.Length);
+                    if (msg.response == null)
+                    {
+                        Console.WriteLine("[ERROR] create_kcp_session 失败：服务端无响应");
+                        return true;
+                    }
+
+                    var okObj = msg.response.Get("ok");
+                    bool ok = okObj != null && (bool)okObj;
+                    Console.WriteLine($"[INFO] create_kcp_session 响应：ok={ok}");
+                }
+                catch (OperationCanceledException)
+                {
+                    Console.WriteLine("[ERROR] create_kcp_session 请求超时");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[ERROR] create_kcp_session 请求失败：{ex.Message}");
+                }
                 return true;
 
             case "connect":
