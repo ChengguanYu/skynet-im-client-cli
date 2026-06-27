@@ -16,7 +16,7 @@ public static class RoomCommand
     /// <param name="input">原始用户输入（以 room 开头）。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>始终返回 true，不退出程序。</returns>
-    public static async Task<bool> ExecuteAsync(SprotoRpc rpc, TcpSessionManager tcp, string input, CancellationToken ct)
+    public static async Task<bool> ExecuteAsync(SprotoRpc rpc, TcpSessionManager tcp, KcpConnectionManager kcp, string input, CancellationToken ct)
     {
         if (!tcp.IsLoggedIn)
         {
@@ -46,10 +46,15 @@ public static class RoomCommand
             case "entry":
                 if (string.IsNullOrEmpty(arg))
                 {
-                    Console.WriteLine("用法: room entry <room>");
+                    Console.WriteLine("用法: room entry <roomID>");
                     return true;
                 }
-                Console.WriteLine($"[INFO] room entry {arg}：进入房间（业务待实现）");
+                if (!long.TryParse(arg, out long roomId))
+                {
+                    Console.WriteLine("[ERROR] roomID 须为整数");
+                    return true;
+                }
+                await EntryRoomAsync(rpc, tcp, kcp, roomId, ct);
                 return true;
 
             case "create":
@@ -193,6 +198,131 @@ public static class RoomCommand
         catch (Exception ex)
         {
             Console.WriteLine($"[ERROR] 获取房间列表失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 进入房间完整流程：TCP → create_kcp_session → 建立 KCP → KCP → activate_kcp_session。
+    /// proto: create_kcp_session.response { ok 0 : boolean; kcp_conv 1 : integer; kcp_address 2 : string; session_challenge_code 3 : string }
+    ///        activate_kcp_session.request { token 0 : string; conv 1 : integer }
+    ///        activate_kcp_session.response { ok 0 : boolean }
+    /// </summary>
+    private static async Task EntryRoomAsync(SprotoRpc rpc, TcpSessionManager tcp, KcpConnectionManager kcp, long roomId, CancellationToken ct)
+    {
+        string? token = tcp.Token;
+        if (string.IsNullOrEmpty(token))
+        {
+            Console.WriteLine("[ERROR] 进入房间失败：未登录（无 token）");
+            return;
+        }
+
+        try
+        {
+            // === Phase 1: TCP → create_kcp_session ===
+            var req = rpc.C2S.NewSprotoObject("create_kcp_session.request");
+            req["token"] = token;
+            req["room_id"] = roomId;
+
+            Console.WriteLine($"[INFO] 正在进入房间 {roomId}...");
+            RpcMessage createMsg = await tcp.SendRequestAsync("create_kcp_session", req, ct);
+
+            if (createMsg.response == null)
+            {
+                Console.WriteLine("[ERROR] 进入房间失败：服务端无响应");
+                return;
+            }
+
+            var okObj = createMsg.response.Get("ok");
+            bool ok = okObj != null && (bool)okObj;
+
+            if (!ok)
+            {
+                Console.WriteLine("[ERROR] 建立会话失败：房间不存在");
+                return;
+            }
+
+            var kcpConvObj = createMsg.response.Get("kcp_conv");
+            long kcpConvLong = kcpConvObj == null ? -1 : (long)kcpConvObj;
+            if (kcpConvLong < 0)
+            {
+                Console.WriteLine("[ERROR] 进入房间失败：服务端未返回有效的 kcp_conv");
+                return;
+            }
+            uint kcpConv = (uint)kcpConvLong;
+
+            string kcpAddress = (string)createMsg.response.Get("kcp_address") ?? "";
+            if (string.IsNullOrEmpty(kcpAddress))
+            {
+                Console.WriteLine("[ERROR] 进入房间失败：服务端未返回 kcp_address");
+                return;
+            }
+
+            Console.WriteLine($"[INFO] create_kcp_session 成功：conv=0x{kcpConv:x8}, address={kcpAddress}");
+
+            // === Phase 2: 建立 KCP 连接到服务器的 KCP 端口 ===
+            kcp.Disconnect();
+
+            string[] addrParts = kcpAddress.Split(':');
+            if (addrParts.Length != 2 || !int.TryParse(addrParts[1], out int kcpPort))
+            {
+                Console.WriteLine("[ERROR] 进入房间失败：kcp_address 格式无效");
+                return;
+            }
+
+            bool kcpConnected = await kcp.ConnectToAsync(addrParts[0], kcpPort, kcpConv, ct);
+            if (!kcpConnected)
+            {
+                Console.WriteLine("[ERROR] 进入房间失败：KCP 连接失败");
+                return;
+            }
+
+            // === Phase 3: KCP → activate_kcp_session ===
+            var activateReq = rpc.C2S.NewSprotoObject("activate_kcp_session.request");
+            activateReq["token"] = token;
+            activateReq["conv"] = kcpConvLong;
+
+            Console.WriteLine("[INFO] 正在通过 KCP 发送 activate_kcp_session...");
+            long sessionId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            RpcPackage activatePkg = rpc.PackRequest("activate_kcp_session", activateReq, sessionId);
+
+            byte[] sendBuf = new byte[activatePkg.size];
+            Array.Copy(activatePkg.data, sendBuf, activatePkg.size);
+
+            bool sent = await kcp.SendRawAsync(sendBuf, ct);
+            if (!sent)
+            {
+                Console.WriteLine("[ERROR] 进入房间失败：activate_kcp_session 发送失败");
+                return;
+            }
+
+            Console.WriteLine("[INFO] 等待 activate_kcp_session 响应...");
+            byte[] responseBytes = await kcp.WaitForRawResponseAsync(ct);
+
+            RpcMessage activateMsg = rpc.UnpackMessage(responseBytes, responseBytes.Length);
+            if (activateMsg.response == null)
+            {
+                Console.WriteLine("[ERROR] 进入房间失败：激活 KCP 会话无响应");
+                return;
+            }
+
+            var activateOkObj = activateMsg.response.Get("ok");
+            bool activateOk = activateOkObj != null && (bool)activateOkObj;
+
+            if (!activateOk)
+            {
+                Console.WriteLine("[ERROR] 进入房间失败：服务端拒绝激活 KCP 会话");
+                return;
+            }
+
+            Console.WriteLine($"[OK] 进入房间成功：room_id={roomId}");
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("[ERROR] 进入房间失败：请求超时（服务端无响应）");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ERROR] 进入房间失败：{ex.Message}");
         }
     }
 

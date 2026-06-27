@@ -53,7 +53,7 @@ public sealed class CommandHandler : IDisposable
 
         if (command == "room" || command.StartsWith("room "))
         {
-            return await RoomCommand.ExecuteAsync(_rpc, _tcp, input, ct);
+            return await RoomCommand.ExecuteAsync(_rpc, _tcp, _kcp, input, ct);
         }
 
         switch (command)

@@ -125,6 +125,71 @@ public sealed class KcpConnectionManager : IDisposable
     }
 
     /// <summary>
+    /// 使用指定的 conv 建立到目标主机的 KCP 连接（用于 room entry 流）。
+    /// 不发送 CONNECT 握手，连接后直接返回。
+    /// </summary>
+    public async Task<bool> ConnectToAsync(string host, int port, uint conv, CancellationToken ct)
+    {
+        lock (_stateLock)
+        {
+            if (_connected)
+            {
+                Console.WriteLine("[WARN] 已连接，请先执行 'disconnect'。");
+                return false;
+            }
+        }
+
+        Console.WriteLine($"[INFO] 正在连接 KCP 通道 {host}:{port}...");
+
+        try
+        {
+            var endPoint = new IPEndPoint(IPAddress.Parse(host), port);
+            _socket = new Socket(SocketType.Dgram, ProtocolType.Udp);
+            _socket.Bind(new IPEndPoint(IPAddress.Any, 0));
+            _remoteEndPoint = endPoint;
+
+            // 使用服务端分配的 conv
+            _kcp = new SimpleSegManager.Kcp(conv, new KcpCallback((buffer, length) =>
+            {
+                try
+                {
+                    _socket.SendTo(buffer.Memory.Span.Slice(0, length), SocketFlags.None, _remoteEndPoint);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[WARN] KCP Output 发送失败：{ex.Message}");
+                }
+                finally
+                {
+                    buffer.Dispose();
+                }
+            }));
+
+            _kcp.NoDelay(1, 10, 2, 1);
+            _kcp.WndSize(128, 128);
+            _kcp.SetMtu(1400);
+
+            _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            _udpReceiveTask = UdpReceiveLoopAsync(_cts.Token);
+            _updateTask = UpdateLoopAsync(_cts.Token);
+
+            lock (_stateLock)
+            {
+                _connected = true;
+            }
+
+            Console.WriteLine($"[OK] 已连接到 KCP 通道 {host}:{port}（conv：0x{conv:x8}）");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ERROR] 连接失败：{ex.Message}");
+            CleanupConnection();
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 优雅断开远程连接并清理资源。
     /// </summary>
     public void Disconnect()
