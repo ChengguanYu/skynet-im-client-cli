@@ -16,7 +16,7 @@ public static class RoomCommand
     /// <param name="input">原始用户输入（以 room 开头）。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>始终返回 true，不退出程序。</returns>
-    public static async Task<bool> ExecuteAsync(SprotoRpc rpc, TcpSessionManager tcp, KcpConnectionManager kcp, string input, CancellationToken ct)
+    public static async Task<bool> ExecuteAsync(SprotoRpc rpc, TcpSessionManager tcp, KcpConnectionManager kcp, string input, CancellationToken ct, Action<string>? onRoomEntered = null)
     {
         if (!tcp.IsLoggedIn)
         {
@@ -54,7 +54,7 @@ public static class RoomCommand
                     Console.WriteLine("[ERROR] roomID 须为整数");
                     return true;
                 }
-                await EntryRoomAsync(rpc, tcp, kcp, roomId, ct);
+                await EntryRoomAsync(rpc, tcp, kcp, roomId, ct, onRoomEntered);
                 return true;
 
             case "create":
@@ -207,7 +207,7 @@ public static class RoomCommand
     ///        activate_kcp_session.request { token 0 : string; conv 1 : integer }
     ///        activate_kcp_session.response { ok 0 : boolean }
     /// </summary>
-    private static async Task EntryRoomAsync(SprotoRpc rpc, TcpSessionManager tcp, KcpConnectionManager kcp, long roomId, CancellationToken ct)
+    private static async Task EntryRoomAsync(SprotoRpc rpc, TcpSessionManager tcp, KcpConnectionManager kcp, long roomId, CancellationToken ct, Action<string>? onRoomEntered = null)
     {
         string? token = tcp.Token;
         if (string.IsNullOrEmpty(token))
@@ -258,6 +258,8 @@ public static class RoomCommand
             }
 
             Console.WriteLine($"[INFO] create_kcp_session 成功：conv=0x{kcpConv:x8}, address={kcpAddress}");
+
+            string roomName = (string)createMsg.response.Get("room_name") ?? "";
 
             // === Phase 2: 建立 KCP 连接到服务器的 KCP 端口 ===
             kcp.Disconnect();
@@ -315,6 +317,7 @@ public static class RoomCommand
             }
 
             Console.WriteLine($"[OK] 进入房间成功：room_id={roomId}");
+            onRoomEntered?.Invoke(roomName);
         }
         catch (OperationCanceledException)
         {

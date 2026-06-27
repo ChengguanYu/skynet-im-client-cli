@@ -8,6 +8,7 @@ public enum PromptState
 {
     Disconnected,
     Connected,
+    InRoom,
 }
 
 /// <summary>
@@ -23,6 +24,7 @@ public sealed class CommandHandler : IDisposable
     private readonly SprotoRpc _rpc;
     private long _sessionCounter;
     private PromptState _promptState = PromptState.Disconnected;
+    private string? _currentRoomName;
 
     /// <summary>
     /// 初始化 CommandHandler 实例。
@@ -39,6 +41,7 @@ public sealed class CommandHandler : IDisposable
         _rpc = rpc;
         _keepAlive = new KeepAliveService(rpc, tcp);
         _tcp.ConnectionLost += OnTcpConnectionLost;
+        _kcp.ConnectionLost += OnKcpConnectionLost;
     }
 
     /// <summary>
@@ -49,7 +52,18 @@ public sealed class CommandHandler : IDisposable
     {
         _keepAlive.Stop();
         _promptState = PromptState.Disconnected;
+        _currentRoomName = null;
         Console.WriteLine("\n[INFO] 登录已失效，请重新 connect。");
+    }
+
+    private void OnKcpConnectionLost()
+    {
+        if (_promptState == PromptState.InRoom)
+        {
+            _currentRoomName = null;
+            _promptState = PromptState.Connected;
+            Console.WriteLine("\n[INFO] 房间连接已断开。");
+        }
     }
 
     /// <summary>
@@ -61,7 +75,11 @@ public sealed class CommandHandler : IDisposable
 
         if (command == "room" || command.StartsWith("room "))
         {
-            return await RoomCommand.ExecuteAsync(_rpc, _tcp, _kcp, input, ct);
+            return await RoomCommand.ExecuteAsync(_rpc, _tcp, _kcp, input, ct, onRoomEntered: roomName =>
+            {
+                _currentRoomName = roomName;
+                _promptState = PromptState.InRoom;
+            });
         }
 
         switch (command)
@@ -151,6 +169,7 @@ public sealed class CommandHandler : IDisposable
             case "disconnect":
                 _keepAlive.Stop();
                 _promptState = PromptState.Disconnected;
+                _currentRoomName = null;
                 _tcp.Disconnect();
                 _kcp.Disconnect();
                 return true;
@@ -190,9 +209,16 @@ public sealed class CommandHandler : IDisposable
     /// </summary>
     public string GetPrompt()
     {
-        if (_promptState == PromptState.Connected && !string.IsNullOrEmpty(_tcp.DisplayName))
-            return $"{_tcp.DisplayName}@connected> ";
-        return "disconnected> ";
+        switch (_promptState)
+        {
+            case PromptState.Connected:
+                return $"{_tcp.DisplayName}@connected> ";
+            case PromptState.InRoom:
+                return $"{_tcp.DisplayName}@{_currentRoomName}> ";
+            case PromptState.Disconnected:
+            default:
+                return "disconnected> ";
+        }
     }
 
     /// <summary>
