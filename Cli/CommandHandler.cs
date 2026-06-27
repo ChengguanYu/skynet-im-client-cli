@@ -212,9 +212,9 @@ public sealed class CommandHandler : IDisposable
         switch (_promptState)
         {
             case PromptState.Connected:
-                return $"{_tcp.DisplayName}@connected> ";
+                return $"connected {_tcp.DisplayName}@connected> ";
             case PromptState.InRoom:
-                return $"{_tcp.DisplayName}@{_currentRoomName}> ";
+                return $"InRoom {_tcp.DisplayName}@{_currentRoomName}> ";
             case PromptState.Disconnected:
             default:
                 return "disconnected> ";
