@@ -4,6 +4,12 @@ using Sproto;
 
 namespace Im.Cli;
 
+public enum PromptState
+{
+    Disconnected,
+    Connected,
+}
+
 /// <summary>
 /// 处理 CLI 命令解析与分发。
 /// 在用户输入和连接管理器之间进行协调。
@@ -16,6 +22,7 @@ public sealed class CommandHandler : IDisposable
     private readonly AppConfig _config;
     private readonly SprotoRpc _rpc;
     private long _sessionCounter;
+    private PromptState _promptState = PromptState.Disconnected;
 
     /// <summary>
     /// 初始化 CommandHandler 实例。
@@ -41,6 +48,7 @@ public sealed class CommandHandler : IDisposable
     private void OnTcpConnectionLost()
     {
         _keepAlive.Stop();
+        _promptState = PromptState.Disconnected;
         Console.WriteLine("\n[INFO] 登录已失效，请重新 connect。");
     }
 
@@ -127,6 +135,8 @@ public sealed class CommandHandler : IDisposable
                     return true;
                 }
                 await ConnectCommand.ExecuteAsync(_config, _rpc, _tcp, _keepAlive, ct);
+                if (_tcp.IsLoggedIn)
+                    _promptState = PromptState.Connected;
                 return true;
 
             case "register":
@@ -140,6 +150,7 @@ public sealed class CommandHandler : IDisposable
 
             case "disconnect":
                 _keepAlive.Stop();
+                _promptState = PromptState.Disconnected;
                 _tcp.Disconnect();
                 _kcp.Disconnect();
                 return true;
@@ -179,10 +190,9 @@ public sealed class CommandHandler : IDisposable
     /// </summary>
     public string GetPrompt()
     {
-        bool loggedIn = _tcp.IsLoggedIn && !string.IsNullOrEmpty(_tcp.DisplayName);
-        bool isConnected = loggedIn || _kcp.IsConnected;
-        string suffix = isConnected ? "[connected]> " : "[disconnected]> ";
-        return loggedIn ? $"<{_tcp.DisplayName}>@{suffix}" : suffix;
+        if (_promptState == PromptState.Connected && !string.IsNullOrEmpty(_tcp.DisplayName))
+            return $"{_tcp.DisplayName}@connected> ";
+        return "disconnected> ";
     }
 
     /// <summary>
