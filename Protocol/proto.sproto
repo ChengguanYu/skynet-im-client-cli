@@ -64,15 +64,13 @@ get_rooms 5{
 create_kcp_session 6{
     request {
       token 0 : string
-      room_id 1 : integer
     }
     response {
       ok 0 : boolean
       kcp_conv 1 : integer
       kcp_address 2 : string
       session_challenge_code 3 : string
-      room_name 4 : string
-    } 
+    }
 }
 
 activate_kcp_session 7{
@@ -82,5 +80,22 @@ activate_kcp_session 7{
     }
     response {
         ok 0 : boolean
+    }
+}
+
+.user{
+    account 0 : string
+    name 1 : string
+}
+
+entry_room 8{
+    request {
+        room_id 0 : integer
+        token 1 : string
+    }
+    response {
+        ok 0 : boolean
+        room_name 1 : string
+        members 2 : *user
     }
 }

@@ -202,10 +202,13 @@ public static class RoomCommand
     }
 
     /// <summary>
-    /// 进入房间完整流程：TCP → create_kcp_session → 建立 KCP → KCP → activate_kcp_session。
-    /// proto: create_kcp_session.response { ok 0 : boolean; kcp_conv 1 : integer; kcp_address 2 : string; session_challenge_code 3 : string }
+    /// 进入房间完整流程：TCP → create_kcp_session → 建立 KCP → KCP → activate_kcp_session → KCP → entry_room。
+    /// proto: create_kcp_session.request { token 0 : string }
+    ///        create_kcp_session.response { ok 0 : boolean; kcp_conv 1 : integer; kcp_address 2 : string; session_challenge_code 3 : string }
     ///        activate_kcp_session.request { token 0 : string; conv 1 : integer }
     ///        activate_kcp_session.response { ok 0 : boolean }
+    ///        entry_room.request { room_id 0 : integer; token 1 : string }
+    ///        entry_room.response { ok 0 : boolean; room_name 1 : string; members 2 : *user }
     /// </summary>
     private static async Task EntryRoomAsync(SprotoRpc rpc, TcpSessionManager tcp, KcpConnectionManager kcp, long roomId, CancellationToken ct, Action<string>? onRoomEntered = null)
     {
@@ -218,10 +221,9 @@ public static class RoomCommand
 
         try
         {
-            // === Phase 1: TCP → create_kcp_session ===
+            // === Phase 1: TCP → create_kcp_session（协议已不再携带 room_id） ===
             var req = rpc.C2S.NewSprotoObject("create_kcp_session.request");
             req["token"] = token;
-            req["room_id"] = roomId;
 
             Console.WriteLine($"[INFO] 正在进入房间 {roomId}...");
             RpcMessage createMsg = await tcp.SendRequestAsync("create_kcp_session", req, ct);
@@ -259,7 +261,8 @@ public static class RoomCommand
 
             Console.WriteLine($"[INFO] create_kcp_session 成功：conv=0x{kcpConv:x8}, address={kcpAddress}");
 
-            string roomName = (string)createMsg.response.Get("room_name") ?? "";
+            // 协议已移除 room_name，使用占位符显示
+            string roomName = "ROOM_NAME";
 
             // === Phase 2: 建立 KCP 连接到服务器的 KCP 端口 ===
             kcp.Disconnect();
@@ -316,8 +319,70 @@ public static class RoomCommand
                 return;
             }
 
-            Console.WriteLine($"[OK] 进入房间成功：room_id={roomId}");
-            onRoomEntered?.Invoke(roomName);
+            Console.WriteLine("[INFO] activate_kcp_session 成功，会话通道已建立");
+
+            // === Phase 4: KCP → entry_room ===
+            var entryReq = rpc.C2S.NewSprotoObject("entry_room.request");
+            entryReq["room_id"] = roomId;
+            entryReq["token"] = token;
+
+            Console.WriteLine("[INFO] 正在通过 KCP 发送 entry_room...");
+            long entrySessionId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            RpcPackage entryPkg = rpc.PackRequest("entry_room", entryReq, entrySessionId);
+
+            byte[] entrySendBuf = new byte[entryPkg.size];
+            Array.Copy(entryPkg.data, entrySendBuf, entryPkg.size);
+
+            bool entrySent = await kcp.SendRawAsync(entrySendBuf, ct);
+            if (!entrySent)
+            {
+                Console.WriteLine("[ERROR] 进入房间失败：entry_room 发送失败");
+                return;
+            }
+
+            Console.WriteLine("[INFO] 等待 entry_room 响应...");
+            byte[] entryResponseBytes = await kcp.WaitForRawResponseAsync(ct);
+
+            RpcMessage entryMsg = rpc.UnpackMessage(entryResponseBytes, entryResponseBytes.Length);
+            if (entryMsg.response == null)
+            {
+                Console.WriteLine("[ERROR] 进入房间失败：entry_room 无响应");
+                return;
+            }
+
+            var entryOkObj = entryMsg.response.Get("ok");
+            bool entryOk = entryOkObj != null && (bool)entryOkObj;
+
+            if (!entryOk)
+            {
+                Console.WriteLine("[ERROR] 进入房间失败：entry_room 返回 ok=false");
+                return;
+            }
+
+            string actualRoomName = (string)entryMsg.response.Get("room_name") ?? roomName;
+            Console.WriteLine($"[OK] 进入房间成功：{actualRoomName}");
+
+            var membersObj = entryMsg.response.Get("members");
+            if (membersObj != null)
+            {
+                try
+                {
+                    var members = (List<SprotoObject>)membersObj;
+                    Console.WriteLine($"房间成员（共 {members.Count} 人）：");
+                    foreach (var member in members)
+                    {
+                        string account = (string)member.Get("account");
+                        string name = (string)member.Get("name");
+                        Console.WriteLine($"  - {name} ({account})");
+                    }
+                }
+                catch
+                {
+                    // 成员列表解析失败不阻止流程
+                }
+            }
+
+            onRoomEntered?.Invoke(actualRoomName);
         }
         catch (OperationCanceledException)
         {
