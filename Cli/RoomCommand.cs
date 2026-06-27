@@ -261,8 +261,7 @@ public static class RoomCommand
 
             Console.WriteLine($"[INFO] create_kcp_session 成功：conv=0x{kcpConv:x8}, address={kcpAddress}");
 
-            // 协议已移除 room_name，使用占位符显示
-            string roomName = "ROOM_NAME";
+            // 协议已移除 room_name，后续由 entry_room 返回
 
             // === Phase 2: 建立 KCP 连接到服务器的 KCP 端口 ===
             kcp.Disconnect();
@@ -359,7 +358,7 @@ public static class RoomCommand
                 return;
             }
 
-            string actualRoomName = (string)entryMsg.response.Get("room_name") ?? roomName;
+            string actualRoomName = (string)entryMsg.response.Get("room_name") ?? "";
             Console.WriteLine($"[OK] 进入房间成功：{actualRoomName}");
 
             var membersObj = entryMsg.response.Get("members");
