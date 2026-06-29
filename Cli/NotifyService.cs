@@ -14,6 +14,11 @@ public sealed class NotifyService : IDisposable
     private readonly KcpConnectionManager _kcp;
     private bool _disposed;
 
+    /// <summary>
+    /// 通知打印后回调，用于重绘提示符。
+    /// </summary>
+    public Action? OnNotifyPrinted { get; set; }
+
     public NotifyService(SprotoRpc rpc, KcpConnectionManager kcp)
     {
         _rpc = rpc;
@@ -31,6 +36,9 @@ public sealed class NotifyService : IDisposable
             var messageObj = msg.request?.Get("message");
             string? message = messageObj == null ? null : (string)messageObj;
             Console.WriteLine($"\n[NOTIFY] {message ?? "(空消息)"}");
+
+            // 回调：重绘提示符
+            OnNotifyPrinted?.Invoke();
 
             // 回复 copy=true 确认收到
             var resp = _rpc.C2S.NewSprotoObject("notify.response");

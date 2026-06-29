@@ -37,6 +37,7 @@ public static class Program
         // 创建通知服务
         using var notifyService = new NotifyService(rpc, kcp);
         dispatcher.PushReceived += notifyService.OnPush;
+        notifyService.OnNotifyPrinted = () => Console.Write(commandHandler.GetPrompt());
 
         kcp.ConnectionLost += () =>
             Console.WriteLine("\n[INFO] 连接丢失。");
