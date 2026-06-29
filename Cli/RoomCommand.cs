@@ -16,7 +16,7 @@ public static class RoomCommand
     /// <param name="input">原始用户输入（以 room 开头）。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>始终返回 true，不退出程序。</returns>
-    public static async Task<bool> ExecuteAsync(SprotoRpc rpc, TcpSessionManager tcp, KcpConnectionManager kcp, string input, CancellationToken ct, Action<string>? onRoomEntered = null)
+    public static async Task<bool> ExecuteAsync(SprotoRpc rpc, TcpSessionManager tcp, KcpConnectionManager kcp, KcpRpcDispatcher dispatcher, string input, CancellationToken ct, Action<string>? onRoomEntered = null)
     {
         if (!tcp.IsLoggedIn)
         {
@@ -54,7 +54,7 @@ public static class RoomCommand
                     Console.WriteLine("[ERROR] roomID 须为整数");
                     return true;
                 }
-                await EntryRoomAsync(rpc, tcp, kcp, roomId, ct, onRoomEntered);
+                await EntryRoomAsync(rpc, tcp, kcp, dispatcher, roomId, ct, onRoomEntered);
                 return true;
 
             case "create":
@@ -210,7 +210,7 @@ public static class RoomCommand
     ///        entry_room.request { room_id 0 : integer; token 1 : string }
     ///        entry_room.response { ok 0 : boolean; room_name 1 : string; members 2 : *user }
     /// </summary>
-    private static async Task EntryRoomAsync(SprotoRpc rpc, TcpSessionManager tcp, KcpConnectionManager kcp, long roomId, CancellationToken ct, Action<string>? onRoomEntered = null)
+    private static async Task EntryRoomAsync(SprotoRpc rpc, TcpSessionManager tcp, KcpConnectionManager kcp, KcpRpcDispatcher dispatcher, long roomId, CancellationToken ct, Action<string>? onRoomEntered = null)
     {
         string? token = tcp.Token;
         if (string.IsNullOrEmpty(token))
@@ -286,23 +286,8 @@ public static class RoomCommand
             activateReq["conv"] = kcpConvLong;
 
             Console.WriteLine("[INFO] 正在通过 KCP 发送 activate_kcp_session...");
-            long sessionId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            RpcPackage activatePkg = rpc.PackRequest("activate_kcp_session", activateReq, sessionId);
+            RpcMessage activateMsg = await dispatcher.SendRequestAsync("activate_kcp_session", activateReq, ct);
 
-            byte[] sendBuf = new byte[activatePkg.size];
-            Array.Copy(activatePkg.data, sendBuf, activatePkg.size);
-
-            bool sent = await kcp.SendRawAsync(sendBuf, ct);
-            if (!sent)
-            {
-                Console.WriteLine("[ERROR] 进入房间失败：activate_kcp_session 发送失败");
-                return;
-            }
-
-            Console.WriteLine("[INFO] 等待 activate_kcp_session 响应...");
-            byte[] responseBytes = await kcp.WaitForRawResponseAsync(ct);
-
-            RpcMessage activateMsg = rpc.UnpackMessage(responseBytes, responseBytes.Length);
             if (activateMsg.response == null)
             {
                 Console.WriteLine("[ERROR] 进入房间失败：激活 KCP 会话无响应");
@@ -326,23 +311,8 @@ public static class RoomCommand
             entryReq["token"] = token;
 
             Console.WriteLine("[INFO] 正在通过 KCP 发送 entry_room...");
-            long entrySessionId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            RpcPackage entryPkg = rpc.PackRequest("entry_room", entryReq, entrySessionId);
+            RpcMessage entryMsg = await dispatcher.SendRequestAsync("entry_room", entryReq, ct);
 
-            byte[] entrySendBuf = new byte[entryPkg.size];
-            Array.Copy(entryPkg.data, entrySendBuf, entryPkg.size);
-
-            bool entrySent = await kcp.SendRawAsync(entrySendBuf, ct);
-            if (!entrySent)
-            {
-                Console.WriteLine("[ERROR] 进入房间失败：entry_room 发送失败");
-                return;
-            }
-
-            Console.WriteLine("[INFO] 等待 entry_room 响应...");
-            byte[] entryResponseBytes = await kcp.WaitForRawResponseAsync(ct);
-
-            RpcMessage entryMsg = rpc.UnpackMessage(entryResponseBytes, entryResponseBytes.Length);
             if (entryMsg.response == null)
             {
                 Console.WriteLine("[ERROR] 进入房间失败：entry_room 无响应");

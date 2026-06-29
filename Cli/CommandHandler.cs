@@ -22,7 +22,7 @@ public sealed class CommandHandler : IDisposable
     private readonly KeepAliveService _keepAlive;
     private readonly AppConfig _config;
     private readonly SprotoRpc _rpc;
-    private long _sessionCounter;
+    private readonly KcpRpcDispatcher _kcpDispatcher;
     private PromptState _promptState = PromptState.Disconnected;
     private string? _currentRoomName;
 
@@ -33,12 +33,14 @@ public sealed class CommandHandler : IDisposable
     /// <param name="tcp">TCP 会话状态机，负责 TCP 连接生命周期与通用收发。</param>
     /// <param name="config">应用程序配置。</param>
     /// <param name="rpc">sproto RPC 实例，用于构造 login/register 等业务请求。</param>
-    public CommandHandler(KcpConnectionManager kcp, TcpSessionManager tcp, AppConfig config, SprotoRpc rpc)
+    /// <param name="kcpDispatcher">KCP 请求-响应分发器，按 session ID 匹配响应。</param>
+    public CommandHandler(KcpConnectionManager kcp, TcpSessionManager tcp, AppConfig config, SprotoRpc rpc, KcpRpcDispatcher kcpDispatcher)
     {
         _kcp = kcp;
         _tcp = tcp;
         _config = config;
         _rpc = rpc;
+        _kcpDispatcher = kcpDispatcher;
         _keepAlive = new KeepAliveService(rpc, tcp);
         _tcp.ConnectionLost += OnTcpConnectionLost;
         _kcp.ConnectionLost += OnKcpConnectionLost;
@@ -75,7 +77,7 @@ public sealed class CommandHandler : IDisposable
 
         if (command == "room" || command.StartsWith("room "))
         {
-            return await RoomCommand.ExecuteAsync(_rpc, _tcp, _kcp, input, ct, onRoomEntered: roomName =>
+            return await RoomCommand.ExecuteAsync(_rpc, _tcp, _kcp, _kcpDispatcher, input, ct, onRoomEntered: roomName =>
             {
                 _currentRoomName = roomName;
                 _promptState = PromptState.InRoom;
@@ -102,30 +104,13 @@ public sealed class CommandHandler : IDisposable
                         return true;
                     }
 
-                    // 2. 打包 create_kcp_session 请求
+                    // 2. 通过 KcpRpcDispatcher 发送 create_kcp_session 请求并等待响应
                     var req = _rpc.C2S.NewSprotoObject("create_kcp_session.request");
                     req["token"] = "mooc";
 
-                    long sessionId = Interlocked.Increment(ref _sessionCounter);
-                    RpcPackage pkg = _rpc.PackRequest("create_kcp_session", req, sessionId);
-
-                    // 3. 通过 KCP 发送打包后的 sproto 数据
                     Console.WriteLine("[INFO] 正在通过 KCP 发送 create_kcp_session 请求...");
-                    byte[] sendBuf = new byte[pkg.size];
-                    Array.Copy(pkg.data, sendBuf, pkg.size);
-                    bool sent = await _kcp.SendRawAsync(sendBuf, ct);
-                    if (!sent)
-                    {
-                        Console.WriteLine("[ERROR] create_kcp_session 发送失败");
-                        return true;
-                    }
+                    RpcMessage msg = await _kcpDispatcher.SendRequestAsync("create_kcp_session", req, ct);
 
-                    // 4. 等待原始字节响应
-                    Console.WriteLine("[INFO] 等待响应...");
-                    byte[] responseBytes = await _kcp.WaitForRawResponseAsync(ct);
-
-                    // 5. 解包响应
-                    RpcMessage msg = _rpc.UnpackMessage(responseBytes, responseBytes.Length);
                     if (msg.response == null)
                     {
                         Console.WriteLine("[ERROR] create_kcp_session 失败：服务端无响应");

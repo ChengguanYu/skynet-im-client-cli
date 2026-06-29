@@ -4,21 +4,16 @@ using Sproto;
 namespace Im.Cli;
 
 /// <summary>
-/// KCP 通知服务。订阅 KCP 通道裸数据，解析 sproto 消息，
-/// 处理服务端推送的 <c>notify.request</c>，打印通知并回复 <c>copy=true</c>。
+/// KCP 通知服务。处理服务端推送的 <c>notify.request</c>，
+/// 打印通知并回复 <c>copy=true</c>。
+/// 输入来自 <see cref="KcpRpcDispatcher.PushReceived"/> 事件。
 /// </summary>
 public sealed class NotifyService : IDisposable
 {
     private readonly SprotoRpc _rpc;
     private readonly KcpConnectionManager _kcp;
-    private bool _started;
     private bool _disposed;
 
-    /// <summary>
-    /// 初始化通知服务。
-    /// </summary>
-    /// <param name="rpc">Sproto RPC 实例，用于消息解包和打包。</param>
-    /// <param name="kcp">KCP 连接管理器，用于订阅消息事件和发送响应。</param>
     public NotifyService(SprotoRpc rpc, KcpConnectionManager kcp)
     {
         _rpc = rpc;
@@ -26,56 +21,11 @@ public sealed class NotifyService : IDisposable
     }
 
     /// <summary>
-    /// 开始监听 KCP 通道上的通知消息。
+    /// 处理分发器推送的已解码 sproto 消息。
+    /// <c>notify.request</c> → 打印通知内容，回复 <c>copy=true</c>。
     /// </summary>
-    public void Start()
+    public void OnPush(RpcMessage msg)
     {
-        if (_started) return;
-        _started = true;
-        _kcp.MessageReceived += OnRawData;
-    }
-
-    /// <summary>
-    /// 停止监听 KCP 通道上的通知消息。
-    /// </summary>
-    public void Stop()
-    {
-        if (!_started) return;
-        _started = false;
-        _kcp.MessageReceived -= OnRawData;
-    }
-
-    /// <summary>
-    /// 释放资源，停止监听。
-    /// </summary>
-    public void Dispose()
-    {
-        if (_disposed) return;
-        _disposed = true;
-        Stop();
-    }
-
-    /// <summary>
-    /// KCP 裸数据回调。尝试解析为 sproto 消息：
-    /// <list type="bullet">
-    ///   <item><c>notify.request</c> → 打印通知内容，回复 <c>copy=true</c></item>
-    ///   <item>其他 sproto 消息 → 打印警告</item>
-    ///   <item>解析失败 → 打印警告，不中断连接</item>
-    /// </list>
-    /// </summary>
-    private void OnRawData(byte[] data, int length)
-    {
-        RpcMessage msg;
-        try
-        {
-            msg = _rpc.UnpackMessage(data, length);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[ERROR] 解析 sproto 失败：{ex.Message}");
-            return;
-        }
-
         if (msg.type == "request" && msg.proto == "notify")
         {
             var messageObj = msg.request?.Get("message");
@@ -91,9 +41,11 @@ public sealed class NotifyService : IDisposable
             Array.Copy(pkg.data, buf, pkg.size);
             _ = _kcp.SendRawAsync(buf, CancellationToken.None);
         }
-        else
-        {
-            Console.WriteLine($"[WARN] 收到未处理的 sproto 消息：proto={msg.proto}, type={msg.type}");
-        }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
     }
 }

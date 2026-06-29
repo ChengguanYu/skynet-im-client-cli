@@ -30,11 +30,13 @@ public static class Program
         long nextSession = 1;
         using var tcp = new TcpSessionManager(rpc, () => nextSession++);
 
-        using var commandHandler = new CommandHandler(kcp, tcp, config, rpc);
+        using var dispatcher = new KcpRpcDispatcher(rpc, kcp);
+
+        using var commandHandler = new CommandHandler(kcp, tcp, config, rpc, dispatcher);
 
         // 创建通知服务
         using var notifyService = new NotifyService(rpc, kcp);
-        notifyService.Start();
+        dispatcher.PushReceived += notifyService.OnPush;
 
         kcp.ConnectionLost += () =>
             Console.WriteLine("\n[INFO] 连接丢失。");

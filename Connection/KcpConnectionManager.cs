@@ -24,9 +24,6 @@ public sealed class KcpConnectionManager : IDisposable
     private bool _connected;
     private bool _disposed;
 
-    // 原始字节请求-响应：用于 sproto 协议在 KCP 上的收发
-    private readonly object _rawLock = new();
-    private TaskCompletionSource<byte[]>? _rawResponseTcs;
     private readonly System.Diagnostics.Stopwatch _deadLinkTimer = System.Diagnostics.Stopwatch.StartNew();
     private int _lastWaitSnd;
     private const long DeadTimeoutMs = 10_000;
@@ -242,26 +239,6 @@ public sealed class KcpConnectionManager : IDisposable
     }
 
     /// <summary>
-    /// 等待下一个通过 KCP 到达的原始字节响应（仅一次）。
-    /// 与 <see cref="SendRawAsync"/> 配合实现请求-响应模式。
-    /// </summary>
-    public Task<byte[]> WaitForRawResponseAsync(CancellationToken ct)
-    {
-        var tcs = new TaskCompletionSource<byte[]>();
-        lock (_rawLock)
-        {
-            _rawResponseTcs = tcs;
-        }
-
-        if (ct.CanBeCanceled)
-        {
-            ct.Register(() => tcs.TrySetCanceled());
-        }
-
-        return tcs.Task;
-    }
-
-    /// <summary>
     /// 通过 KCP 连接发送文本消息。
     /// 数据入队后立即触发一次 Update 以刷出（不等下一个 10ms tick）。
     /// </summary>
@@ -385,25 +362,8 @@ public sealed class KcpConnectionManager : IDisposable
 
                     receivedAny = true;
 
-                    // 优先投递给原始字节等待者（sproto 请求-响应）
-                    TaskCompletionSource<byte[]>? rawTcs;
-                    lock (_rawLock)
-                    {
-                        rawTcs = _rawResponseTcs;
-                        if (rawTcs != null)
-                            _rawResponseTcs = null;
-                    }
-
-                    if (rawTcs != null)
-                    {
-                        var response = new byte[n];
-                        Array.Copy(appBuf, response, n);
-                        rawTcs.TrySetResult(response);
-                    }
-                    else
-                    {
-                        MessageReceived?.Invoke(appBuf, n);
-                    }
+                    // 所有消息统一通过事件分发（由 KcpRpcDispatcher 按 session ID 路由）
+                    MessageReceived?.Invoke(appBuf, n);
                 }
                 if (receivedAny)
                     _deadLinkTimer.Restart();
