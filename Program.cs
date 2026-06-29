@@ -32,9 +32,10 @@ public static class Program
 
         using var commandHandler = new CommandHandler(kcp, tcp, config, rpc);
 
-        // 注册事件
-        kcp.MessageReceived += message =>
-            Console.WriteLine($"\n[RECV] {message}");
+        // 创建通知服务
+        using var notifyService = new NotifyService(rpc, kcp);
+        notifyService.Start();
+
         kcp.ConnectionLost += () =>
             Console.WriteLine("\n[INFO] 连接丢失。");
 

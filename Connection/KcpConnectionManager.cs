@@ -42,7 +42,7 @@ public sealed class KcpConnectionManager : IDisposable
     /// <summary>
     /// 收到远程主机消息时触发。
     /// </summary>
-    public event Action<string>? MessageReceived;
+    public event Action<byte[], int>? MessageReceived;
 
     /// <summary>
     /// 连接意外断开时触发。
@@ -402,8 +402,7 @@ public sealed class KcpConnectionManager : IDisposable
                     }
                     else
                     {
-                        string msg = Encoding.UTF8.GetString(appBuf, 0, n);
-                        MessageReceived?.Invoke(msg);
+                        MessageReceived?.Invoke(appBuf, n);
                     }
                 }
                 if (receivedAny)
