@@ -11,6 +11,7 @@ public static class SayCommand
         {
             var req = rpc.C2S.NewSprotoObject("room_message_push.request");
             req["message"] = content;
+            req["msg_code"] = (long)MsgCode.MessagePush;
 
             var userObj = rpc.C2S.NewSprotoObject("user");
             userObj["account"] = tcp.Account ?? "";
