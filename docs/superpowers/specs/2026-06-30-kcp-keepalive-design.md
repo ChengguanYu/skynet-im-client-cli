@@ -43,9 +43,7 @@ description: KCP 连接 keepAlive 设计 — 复用 TCP keepAlive 协议（tag 3
   - `OnKcpConnectionLost` 回调（双重保障：KCP 本身断线 + keepAlive 发送失败都会触发）
   - `dispose` / `quit`
 
-**修改 `Program.cs`：**
-
-- 将 `KcpKeepAliveService` 注入 `CommandHandler` 构造函数
+**无需修改 `Program.cs`：**`KcpKeepAliveService` 在 `CommandHandler` 构造函数内创建（与 TCP `KeepAliveService` 一致）。
 
 ### 异常处理
 

@@ -177,6 +177,7 @@ public sealed class CommandHandler : IDisposable
             case "quit":
             case "exit":
                 _keepAlive.Dispose();
+                _kcpKeepAlive.Dispose();
                 _tcp.Dispose();
                 _kcp.Disconnect();
                 Console.WriteLine("[INFO] 再见。");
