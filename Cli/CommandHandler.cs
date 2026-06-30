@@ -72,6 +72,20 @@ public sealed class CommandHandler : IDisposable
     }
 
     /// <summary>
+    /// 如果配置了账号密码，自动执行 connect。
+    /// </summary>
+    public async Task TryAutoConnectAsync(CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(_config.Account) || string.IsNullOrEmpty(_config.Password))
+            return;
+
+        Console.WriteLine("[INFO] 检测到账号密码已配置，正在自动连接...");
+        await ConnectCommand.ExecuteAsync(_config, _rpc, _tcp, _keepAlive, ct);
+        if (_tcp.IsLoggedIn)
+            _promptState = PromptState.Connected;
+    }
+
+    /// <summary>
     /// 处理单行命令输入。
     /// </summary>
     public async Task<bool> ProcessCommandAsync(string input, CancellationToken ct)
@@ -174,10 +188,22 @@ public sealed class CommandHandler : IDisposable
                 PrintConfig();
                 return true;
 
-            case "quit":
             case "exit":
+                if (_promptState == PromptState.InRoom)
+                {
+                    bool exited = await RoomExitCommand.ExecuteAsync(_rpc, _kcpDispatcher, ct);
+                    if (exited)
+                    {
+                        _currentRoomName = null;
+                        _promptState = PromptState.Connected;
+                        Console.WriteLine("[OK] 已退出房间");
+                    }
+                    return true;
+                }
+                goto case "quit";
+
+            case "quit":
                 _keepAlive.Dispose();
-                _kcpKeepAlive.Dispose();
                 _tcp.Dispose();
                 _kcp.Disconnect();
                 Console.WriteLine("[INFO] 再见。");

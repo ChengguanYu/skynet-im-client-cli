@@ -47,9 +47,6 @@ public static class Program
         kcp.ConnectionLost += () =>
             Console.WriteLine("\n[INFO] 连接丢失。");
 
-        // 打印横幅
-        CommandHandler.PrintBanner();
-
         // 设置取消令牌（Ctrl+C）
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>
@@ -58,6 +55,12 @@ public static class Program
             Console.WriteLine("\n[INFO] 检测到 Ctrl+C，正在关闭...");
             cts.Cancel();
         };
+
+        // 打印横幅
+        CommandHandler.PrintBanner();
+
+        // 自动连接（如果配置了账号密码）
+        await commandHandler.TryAutoConnectAsync(cts.Token);
 
         // 运行命令循环
         await RunCommandLoopAsync(commandHandler, cts.Token);

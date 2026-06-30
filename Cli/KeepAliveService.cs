@@ -15,7 +15,7 @@ namespace Im.Cli;
 /// </remarks>
 public sealed class KeepAliveService : IDisposable
 {
-    private static readonly TimeSpan Interval = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan Interval = TimeSpan.FromSeconds(15);
 
     private readonly SprotoRpc _rpc;
     private readonly TcpSessionManager _tcp;
