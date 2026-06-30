@@ -59,12 +59,17 @@ public static class RoomCommand
 
             case "create":
                 string? roomName = ParseNameOption(arg);
+                bool noEntry = arg.Contains("--no-entry");
                 if (string.IsNullOrEmpty(roomName))
                 {
-                    Console.WriteLine("用法: room create -n <name>");
+                    Console.WriteLine("用法: room create -n <name> [--no-entry]");
                     return true;
                 }
                 long createdRoomId = await CreateRoomAsync(rpc, tcp, roomName, ct);
+                if (createdRoomId >= 0 && !noEntry)
+                {
+                    await EntryRoomAsync(rpc, tcp, kcp, dispatcher, createdRoomId, ct, onRoomEntered);
+                }
                 return true;
 
             default:
@@ -383,6 +388,6 @@ public static class RoomCommand
 
     private static void PrintUsage()
     {
-        Console.WriteLine("用法: room list | room entry <room> | room create -n <name>");
+        Console.WriteLine("用法: room list | room entry <room> | room create -n <name> [--no-entry]");
     }
 }
