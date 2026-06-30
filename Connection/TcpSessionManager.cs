@@ -38,6 +38,7 @@ public sealed class TcpSessionManager : IDisposable
     private string? _token;
     private string? _displayName;
     private long? _sessionId;
+    private string? _account;
 
     private TcpState _state = TcpState.Disconnected;
     private bool _disposed;
@@ -103,6 +104,14 @@ public sealed class TcpSessionManager : IDisposable
     public long? SessionId
     {
         get { lock (_lock) return _sessionId; }
+    }
+
+    /// <summary>
+    /// 登录账号，未登录时为 null。
+    /// </summary>
+    public string? Account
+    {
+        get { lock (_lock) return _account; }
     }
 
     /// <summary>
@@ -240,7 +249,7 @@ public sealed class TcpSessionManager : IDisposable
     /// <summary>
     /// 标记已认证。业务层登录成功后调用：保存 token/sessionId/name 并转 Authenticated。
     /// </summary>
-    public void SetAuthenticated(string token, long? sessionId, string? name)
+    public void SetAuthenticated(string token, long? sessionId, string? name, string? account)
     {
         lock (_lock)
         {
@@ -252,6 +261,7 @@ public sealed class TcpSessionManager : IDisposable
             _token = token;
             _sessionId = sessionId;
             _displayName = string.IsNullOrEmpty(name) ? null : name;
+            _account = string.IsNullOrEmpty(account) ? null : account;
             SetStateLocked(TcpState.Authenticated);
         }
         FirePendingStateChanged();
@@ -277,6 +287,7 @@ public sealed class TcpSessionManager : IDisposable
             _token = null;
             _displayName = null;
             _sessionId = null;
+            _account = null;
 
             try { _tcp?.Dispose(); } catch { }
             _tcp = null;

@@ -39,6 +39,11 @@ public static class Program
         dispatcher.PushReceived += notifyService.OnPush;
         notifyService.OnNotifyPrinted = () => Console.Write(commandHandler.GetPrompt());
 
+        // 创建聊天消息推送服务
+        using var msgService = new RoomMessagePushService(rpc, kcp);
+        dispatcher.PushReceived += msgService.OnPush;
+        msgService.OnMessagePrinted = () => Console.Write(commandHandler.GetPrompt());
+
         kcp.ConnectionLost += () =>
             Console.WriteLine("\n[INFO] 连接丢失。");
 

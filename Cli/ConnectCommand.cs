@@ -54,7 +54,7 @@ public static class ConnectCommand
             long? sessionId = sessionIdObj == null ? null : (long)sessionIdObj;
 
             // 业务层解析完毕，交给状态机保存登录态并转 Authenticated
-            tcp.SetAuthenticated(token, sessionId, name);
+            tcp.SetAuthenticated(token, sessionId, name, config.Account);
             Console.WriteLine("[OK] 登录成功");
             if (!string.IsNullOrEmpty(name)) Console.WriteLine($"[INFO] 欢迎 {name}");
 

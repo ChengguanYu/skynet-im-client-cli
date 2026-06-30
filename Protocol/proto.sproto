@@ -100,16 +100,14 @@ entry_room 8{
     }
 }
 
-room_message 9{
+room_message_push 9{
     request {
         message 0 : string
         user 1 : user
     }
     response {
         ok 0 : boolean
-        is_reply 1 : boolean
-        message 2 : string
-        user 3 : user
+        message 1 : string
     }
 }
 

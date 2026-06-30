@@ -176,7 +176,22 @@ public sealed class CommandHandler : IDisposable
                 return false;
 
             default:
-                if (command.StartsWith("send "))
+                if (command == "say" || command.StartsWith("say "))
+                {
+                    if (_promptState != PromptState.InRoom)
+                    {
+                        Console.WriteLine("[ERROR] 请先进入房间");
+                        return true;
+                    }
+                    if (command == "say")
+                    {
+                        Console.WriteLine("[ERROR] say <message>");
+                        return true;
+                    }
+                    string content = input.Trim()[4..];
+                    await SayCommand.ExecuteAsync(_rpc, _kcpDispatcher, _tcp, content, ct);
+                }
+                else if (command.StartsWith("send "))
                 {
                     string message = input.Trim()[5..];
                     await _kcp.SendMessageAsync(message, ct);
@@ -263,6 +278,7 @@ public sealed class CommandHandler : IDisposable
         }
         Console.WriteLine("  disconnect       - 断开远程连接");
         Console.WriteLine("  send <message>   - 发送文本消息到服务器");
+        Console.WriteLine("  say <message>    - 在房间内发送消息");
         Console.WriteLine("  status           - 查看当前连接状态");
         Console.WriteLine("  config           - 查看当前 HOST/PORT 配置");
         Console.WriteLine("  help             - 显示此帮助信息");
