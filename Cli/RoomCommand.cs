@@ -64,7 +64,7 @@ public static class RoomCommand
                     Console.WriteLine("用法: room create -n <name>");
                     return true;
                 }
-                await CreateRoomAsync(rpc, tcp, roomName, ct);
+                long createdRoomId = await CreateRoomAsync(rpc, tcp, roomName, ct);
                 return true;
 
             default:
@@ -77,19 +77,20 @@ public static class RoomCommand
     /// 构造并发送 create_room 请求。
     /// proto: create_room.request { token 0 : string; room_name 1 : string }
     ///        create_room.response { room_id 0 : integer }
-    /// 成功打印 room_id；失败通知并打印 room_id=-1。
+    /// 成功返回 room_id；失败返回 -1。
     /// </summary>
     /// <param name="rpc">sproto RPC 实例，用于构造 create_room 请求。</param>
     /// <param name="tcp">TCP 会话状态机，提供 token 与通用收发。</param>
     /// <param name="roomName">房间名称。</param>
     /// <param name="ct">取消令牌。</param>
-    private static async Task CreateRoomAsync(SprotoRpc rpc, TcpSessionManager tcp, string roomName, CancellationToken ct)
+    /// <returns>创建成功返回 room_id；失败返回 -1。</returns>
+    private static async Task<long> CreateRoomAsync(SprotoRpc rpc, TcpSessionManager tcp, string roomName, CancellationToken ct)
     {
         string? token = tcp.Token;
         if (string.IsNullOrEmpty(token))
         {
             Console.WriteLine("[ERROR] 创建房间失败：未登录（无 token），room_id=-1");
-            return;
+            return -1;
         }
 
         try
@@ -104,7 +105,7 @@ public static class RoomCommand
             if (msg.response == null)
             {
                 Console.WriteLine("[ERROR] 创建房间失败：服务端无响应，room_id=-1");
-                return;
+                return -1;
             }
 
             var roomIdObj = msg.response.Get("room_id");
@@ -113,18 +114,21 @@ public static class RoomCommand
             if (roomId < 0)
             {
                 Console.WriteLine($"[ERROR] 创建房间失败：room_id={roomId}");
-                return;
+                return -1;
             }
 
             Console.WriteLine($"[OK] 创建房间成功：room_id={roomId}");
+            return roomId;
         }
         catch (OperationCanceledException)
         {
             Console.WriteLine("[ERROR] 创建房间失败：请求超时（服务端无响应），room_id=-1");
+            return -1;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[ERROR] 创建房间失败：{ex.Message}，room_id=-1");
+            return -1;
         }
     }
 
