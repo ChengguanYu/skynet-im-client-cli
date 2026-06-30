@@ -20,6 +20,7 @@ public sealed class CommandHandler : IDisposable
     private readonly KcpConnectionManager _kcp;
     private readonly TcpSessionManager _tcp;
     private readonly KeepAliveService _keepAlive;
+    private readonly KcpKeepAliveService _kcpKeepAlive;
     private readonly AppConfig _config;
     private readonly SprotoRpc _rpc;
     private readonly KcpRpcDispatcher _kcpDispatcher;
@@ -42,6 +43,7 @@ public sealed class CommandHandler : IDisposable
         _rpc = rpc;
         _kcpDispatcher = kcpDispatcher;
         _keepAlive = new KeepAliveService(rpc, tcp);
+        _kcpKeepAlive = new KcpKeepAliveService(rpc, tcp, kcpDispatcher);
         _tcp.ConnectionLost += OnTcpConnectionLost;
         _kcp.ConnectionLost += OnKcpConnectionLost;
     }
@@ -60,6 +62,7 @@ public sealed class CommandHandler : IDisposable
 
     private void OnKcpConnectionLost()
     {
+        _kcpKeepAlive.Stop();
         if (_promptState == PromptState.InRoom)
         {
             _currentRoomName = null;
@@ -81,6 +84,7 @@ public sealed class CommandHandler : IDisposable
             {
                 _currentRoomName = roomName;
                 _promptState = PromptState.InRoom;
+                _kcpKeepAlive.Start();
             });
         }
 
@@ -120,6 +124,8 @@ public sealed class CommandHandler : IDisposable
                     var okObj = msg.response.Get("ok");
                     bool ok = okObj != null && (bool)okObj;
                     Console.WriteLine($"[INFO] create_kcp_session 响应：ok={ok}");
+                    if (ok)
+                        _kcpKeepAlive.Start();
                 }
                 catch (OperationCanceledException)
                 {
@@ -153,6 +159,7 @@ public sealed class CommandHandler : IDisposable
 
             case "disconnect":
                 _keepAlive.Stop();
+                _kcpKeepAlive.Stop();
                 _promptState = PromptState.Disconnected;
                 _currentRoomName = null;
                 _tcp.Disconnect();
@@ -293,6 +300,7 @@ public sealed class CommandHandler : IDisposable
     public void Dispose()
     {
         _keepAlive.Dispose();
+        _kcpKeepAlive.Dispose();
         _tcp.Dispose();
     }
 }
